@@ -1,0 +1,6 @@
+Deposez ici les logos des compagnies en PNG carre, nommes par code OACI.
+Exemples : AFR.png, EZY.png, RYR.png, BAW.png, DLH.png, KLM.png
+
+Ces images ne sont pas versionnees (voir .gitignore) : les logos de
+compagnies sont des marques deposees. Pour un montage personnel aucun
+probleme, mais ne les publiez pas avec le projet.

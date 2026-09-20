@@ -1,0 +1,10 @@
+routes_cache.json
+apercu*.png
+__pycache__/
+logos/*.png
+prieres_cache.json
+meteo_cache.json
+config.json
+apercu.html
+firmware/logos.h
+usage.json
