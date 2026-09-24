@@ -613,6 +613,28 @@ fortement le nombre d'appels à adsbdb. Le calendrier de prière, lui, couvre
 l'année entière : il est rechargé une fois par jour dans `prieres_cache.json`,
 et le panneau reste juste même si le réseau tombe plusieurs semaines.
 
+### Quand une API tombe
+
+- **Un fil par source.** Prières, météo et vols sont collectés chacun dans son
+  fil (`collecteur.py`) : Mawaqit en retard ne retarde plus les avions, et une
+  exception imprévue ne tue plus la collecte.
+- **Délais stricts.** Chaque requête a une échéance, connexion et lecture
+  comprises (`telechargement.py`) : 8 s pour les vols, 10 s pour la météo,
+  15 s pour Mawaqit. Un serveur qui distille un octet par seconde est
+  abandonné à l'heure, et une réponse de plus de 4 Mo est coupée.
+- **Dernière valeur connue.** Une source en panne garde son dernier état :
+  cache périmé sur disque, sinon valeur en mémoire. Un avion déjà affiché le
+  reste jusqu'à `hold_seconds`.
+- **Pas de martèlement.** Après un échec, la source attend deux fois plus
+  longtemps avant de réessayer, jusqu'à dix minutes, puis revient à sa cadence
+  dès le premier succès.
+- **Pannes visibles.** Le simulateur affiche l'état de chaque source (dernier
+  succès, nombre d'échecs, dernière erreur), aussi exposé dans `/frame`.
+- **Caches sûrs.** Les trois caches s'écrivent de façon atomique (fichier
+  provisoire puis `os.replace`, cf. `stockage.py`) : un arrêt brutal ne laisse
+  jamais un fichier à moitié écrit. Le cache des routes purge ses entrées de
+  plus de 12 h, au lieu de grossir sans fin.
+
 ## Matériel
 
 | Élément | Choix conseillé |

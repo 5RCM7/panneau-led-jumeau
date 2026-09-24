@@ -10,15 +10,15 @@ Uniquement la bibliotheque standard, aucun pip install necessaire.
 
 import json
 import math
-import os
+import threading
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 
 import font5x7
+import stockage
+import telechargement
 
-USER_AGENT = "jumeau-panneau-led/1.0 (projet personnel)"
 ADSB_POINT = "https://api.adsb.lol/v2/point/%s/%s/%s"
 ADSBDB_CALLSIGN = "https://api.adsbdb.com/v0/callsign/%s"
 ADSBDB_AIRCRAFT = "https://api.adsbdb.com/v0/aircraft/%s"
@@ -30,19 +30,16 @@ CLE_APPAREIL = "AV:"
 
 ROUTE_TTL = 12 * 3600  # une route de vol change rarement dans la journee
 CACHE_FILE = "routes_cache.json"
+DELAI_S = 8  # par appel, connexion et lecture comprises
 
 
-def _get_json(url, timeout=8):
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
-                                                   "Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8", "replace"))
+def _get_json(url, timeout=None):
+    return json.loads(telechargement.lire_texte(
+        url, timeout or DELAI_S, {"Accept": "application/json"}))
 
 
-def _get_text(url, timeout=8):
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read().decode("utf-8", "replace").strip()
+def _get_text(url, timeout=None):
+    return telechargement.lire_texte(url, timeout or DELAI_S).strip()
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -55,20 +52,33 @@ def haversine_km(lat1, lon1, lat2, lon2):
 
 
 class RouteCache:
-    """Cache disque des routes, pour ne pas matraquer adsbdb."""
+    """Cache disque des routes, pour ne pas matraquer adsbdb.
+
+    Les entrees perimees sont purgees au chargement et a chaque ajout : sans
+    cela le fichier gardait chaque indicatif jamais croise, grossissait sans
+    fin, et etait reecrit en entier a chaque nouvel avion. L'ecriture est
+    atomique, cf. stockage.py.
+    """
 
     def __init__(self, path=CACHE_FILE):
         self.path = path
-        self.data = {}
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as handle:
-                    self.data = json.load(handle)
-            except Exception:
-                self.data = {}
+        self.lock = threading.Lock()
+        self.data = stockage.lit_json(path)
+        self._purge()
+
+    def _purge(self, maintenant=None):
+        """Retire les entrees perimees. Renvoie combien il en est parti."""
+        limite = (maintenant or time.time()) - ROUTE_TTL
+        vieilles = [cle for cle, entree in self.data.items()
+                    if not isinstance(entree, dict)
+                    or entree.get("ts", 0) < limite]
+        for cle in vieilles:
+            del self.data[cle]
+        return len(vieilles)
 
     def get(self, key):
-        entry = self.data.get(key)
+        with self.lock:
+            entry = self.data.get(key)
         if not entry:
             return None
         if time.time() - entry.get("ts", 0) > ROUTE_TTL:
@@ -76,12 +86,11 @@ class RouteCache:
         return entry.get("route")
 
     def put(self, key, route):
-        self.data[key] = {"ts": time.time(), "route": route}
-        try:
-            with open(self.path, "w", encoding="utf-8") as handle:
-                json.dump(self.data, handle)
-        except Exception:
-            pass
+        with self.lock:
+            self._purge()
+            self.data[key] = {"ts": time.time(), "route": route}
+            copie = dict(self.data)
+        stockage.ecrit_json_atomique(self.path, copie)
 
 
 def fetch_nearby(lat, lon, radius_nm):

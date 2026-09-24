@@ -16,7 +16,6 @@ Endpoints :
 import base64
 import json
 import os
-import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -83,7 +82,11 @@ async function tick() {
       '<span class="dot' + (live ? '' : ' off') + '"></span>' +
       'source : ' + data.status.source +
       (data.status.error ? '\\n' + data.status.error : '') +
-      '\\ndernier sondage : ' + (data.status.last_poll ? new Date(data.status.last_poll*1000).toLocaleTimeString('fr-FR') : '-');
+      '\\ndernier sondage : ' + (data.status.last_poll ? new Date(data.status.last_poll*1000).toLocaleTimeString('fr-FR') : '-') +
+      Object.entries(data.status.sources || {}).map(([nom, s]) =>
+        '\\n' + nom + ' : ' + (s.ok ? 'ok' : 'EN PANNE (' + s.echecs + ')') +
+        (s.dernier_succes ? ', ' + new Date(s.dernier_succes*1000).toLocaleTimeString('fr-FR') : '') +
+        (s.erreur ? '\\n  ' + s.erreur : '')).join('');
     document.getElementById('json').textContent = JSON.stringify(data.flight, null, 1);
   } catch (e) { /* le serveur redemarre peut-etre */ }
 }
@@ -155,7 +158,7 @@ def main():
         config = json.load(handle)
 
     gateway = Gateway(config)
-    threading.Thread(target=gateway.run, daemon=True).start()
+    gateway.demarre()  # un fil de collecte par source, cf. collecteur.py
 
     Handler.gateway = gateway
     Handler.config = config

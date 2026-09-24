@@ -5,6 +5,9 @@ lisent l'etat courant sans jamais attendre le reseau.
 
 C'est ici que vit la rotation des ecrans, et les annonces d'arrivee. Le
 firmware obeit au resultat, transmis dans le champ "sc" de /flight.
+
+Chaque source a son propre fil de collecte (cf. collecteur.py) : une API
+lente ne retarde qu'elle-meme, et son dernier etat connu reste servi.
 """
 
 import datetime
@@ -15,6 +18,7 @@ import time
 import adkar
 import audio
 import claudesource
+import collecteur
 import ecran_annonces
 import ecran_adkar
 import ecran_alerte
@@ -83,6 +87,9 @@ class Gateway:
         self.conf = None
         self.prieres = None
         self.meteo = None
+        # donnees brutes d'Open-Meteo : la meteo affichee s'en deduit a
+        # chaque demande, cf. current_meteo
+        self.meteo_brut = None
         self.usage = None
         self.last_seen = 0.0
         self.last_poll = 0.0
@@ -105,6 +112,10 @@ class Gateway:
         # rotation des ecrans
         self.rotation_ecran = None
         self.rotation_debut = 0.0
+        # sante de chaque source, cf. rapporte() ; et l'arret des collecteurs
+        self.sources = {}
+        self.arret = threading.Event()
+        self.collecteurs = []
 
     def current(self):
         with self.lock:
@@ -135,9 +146,21 @@ class Gateway:
             return secours
         return frais or secours
 
-    def current_meteo(self):
+    def current_meteo(self, now=None):
+        """Meteo mise en forme maintenant, comme current_prieres.
+
+        L'heure et le decompte de pluie ne vieillissent pas avec le dernier
+        sondage. Le mode demo, sans donnees brutes, sert self.meteo tel quel.
+        """
         with self.lock:
-            return dict(self.meteo) if self.meteo else None
+            brut = self.meteo_brut
+            secours = dict(self.meteo) if self.meteo else None
+        if not brut:
+            return secours
+        try:
+            return meteosource.depuis_brut(brut, self.config, now) or secours
+        except Exception:
+            return secours
 
     def current_usage(self):
         """Quota Claude Code, recalcule a chaque lecture.
@@ -491,7 +514,35 @@ class Gateway:
     def status(self):
         with self.lock:
             return {"source": self.source, "error": self.error,
-                    "last_poll": self.last_poll, "last_seen": self.last_seen}
+                    "last_poll": self.last_poll, "last_seen": self.last_seen,
+                    "sources": {nom: dict(etat)
+                                for nom, etat in self.sources.items()}}
+
+    def rapporte(self, nom, erreur, duree):
+        """Sante d'une source apres chaque tour de son collecteur.
+
+        Une panne ne se tait plus : elle est gardee ici avec son heure, et
+        affichee par le simulateur, pendant que la derniere valeur connue
+        continue d'etre servie.
+        """
+        maintenant = time.time()
+        with self.lock:
+            etat = self.sources.setdefault(nom, {
+                "ok": None, "erreur": None, "dernier_succes": None,
+                "echecs": 0})
+            etat["derniere_tentative"] = maintenant
+            etat["duree_ms"] = int(duree * 1000)
+            if erreur:
+                etat["ok"] = False
+                etat["erreur"] = ("%s: %s" % (type(erreur).__name__, erreur)
+                                  if isinstance(erreur, BaseException)
+                                  else str(erreur))
+                etat["echecs"] += 1
+            else:
+                etat["ok"] = True
+                etat["erreur"] = None
+                etat["dernier_succes"] = maintenant
+                etat["echecs"] = 0
 
     def _demo_step(self):
         flight = dict(DEMO_FLIGHTS[self._demo_index % len(DEMO_FLIGHTS)])
@@ -512,33 +563,35 @@ class Gateway:
 
     def _meteo_step(self):
         """Rafraichit la meteo. Open-Meteo est interroge au quart d'heure au
-        plus, le reste du temps c'est une lecture de cache."""
-        try:
-            info = meteosource.poll(self.config, self.meteo_cache)
-        except Exception:
-            info = None
-        if info is None:
-            return
-        with self.lock:
-            self.meteo = info
+        plus, le reste du temps c'est une lecture de cache. Renvoie l'erreur
+        s'il y en a eu une, cf. collecteur.Collecteur."""
+        erreurs = []
+        brut = meteosource.charge(self.config, self.meteo_cache, erreurs)
+        # sans reponse ni cache, on garde la derniere meteo en memoire
+        if brut:
+            info = meteosource.depuis_brut(brut, self.config)
+            with self.lock:
+                self.meteo_brut = brut
+                self.meteo = info
+        return erreurs[0] if erreurs else None
 
     def _prieres_step(self):
         """Rafraichit le confData. Le reseau n'est sollicite qu'une fois par
         jour ; la priere courante, elle, se recalcule a chaque demande."""
         slug = self.config.get("mosquee_slug")
         if not slug:
-            return
-        try:
-            conf = prieresource.load_conf(slug, self.prieres_cache)
-            info = prieresource.depuis_conf(conf, self.config, slug)
-        except Exception:
-            return
+            return None
+        erreurs = []
+        conf = prieresource.load_conf(slug, self.prieres_cache, erreurs)
         if conf is None:
-            return
+            # ni reseau ni cache : le dernier confData en memoire reste
+            return erreurs[0] if erreurs else "confData introuvable"
+        info = prieresource.depuis_conf(conf, self.config, slug)
         with self.lock:
             self.conf = conf
             if info is not None:
                 self.prieres = info
+        return erreurs[0] if erreurs else None
 
     def _live_step(self):
         # L'avion a l'ecran, s'il y en a un : il le garde tant qu'aucun autre
@@ -547,31 +600,44 @@ class Gateway:
         courant = actuel.get("callsign") if actuel else None
         try:
             flight = flightsource.poll(self.config, self.cache, courant)
-            with self.lock:
-                self.last_poll = time.time()
-                self.source = "direct"
-                self.error = None
-                if flight is not None:
-                    flight["ticker"] = panel.build_ticker(flight)
-                    self.flight = flight
-                    self.last_seen = time.time()
         except Exception as exc:
+            # l'avion deja connu reste affiche jusqu'a hold_seconds
             with self.lock:
                 self.last_poll = time.time()
                 self.error = "%s: %s" % (type(exc).__name__, exc)
                 self.source = "erreur reseau"
+            return exc
+        with self.lock:
+            self.last_poll = time.time()
+            self.source = "direct"
+            self.error = None
+            if flight is not None:
+                flight["ticker"] = panel.build_ticker(flight)
+                self.flight = flight
+                self.last_seen = time.time()
+        return None
+
+    def demarre(self):
+        """Lance un fil de collecte par source, et rend la main aussitot."""
+        if self.collecteurs:
+            return self.collecteurs
+        if self.config.get("demo_mode", False):
+            etapes = (("demo", self._demo_step, 8),)
+        else:
+            periode = self.config.get("poll_seconds", 12)
+            etapes = (("prieres", self._prieres_step, periode),
+                      ("meteo", self._meteo_step, periode),
+                      ("vols", self._live_step, periode))
+        for nom, etape, periode in etapes:
+            c = collecteur.Collecteur(nom, etape, periode, self.rapporte)
+            c.demarre(self.arret)
+            self.collecteurs.append(c)
+        return self.collecteurs
+
+    def arrete(self):
+        self.arret.set()
 
     def run(self):
-        demo = self.config.get("demo_mode", False)
-        period = self.config.get("poll_seconds", 12)
-        while True:
-            if demo:
-                self._demo_step()
-                time.sleep(8)
-            else:
-                self._prieres_step()
-                self._meteo_step()
-                self._live_step()
-                time.sleep(period)
-
-
+        """Compatibilite : demarre les collecteurs et attend l'arret."""
+        self.demarre()
+        self.arret.wait()

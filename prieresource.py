@@ -17,15 +17,14 @@ Uniquement la bibliotheque standard, aucun pip install necessaire.
 
 import datetime
 import json
-import os
 import time
 import urllib.error
-import urllib.request
 
 import annonces
 import horaires
+import stockage
+import telechargement
 
-USER_AGENT = "jumeau-panneau-led/1.0 (projet personnel)"
 MAWAQIT_URL = "https://mawaqit.net/fr/%s"
 
 CONF_TTL = 24 * 3600  # le calendrier est annuel, un rechargement par jour suffit
@@ -63,13 +62,10 @@ def _extract_conf(html):
     raise ValueError("confData incomplet")
 
 
-def fetch_conf(slug, timeout=10):
+def fetch_conf(slug, timeout=15):
     """Telecharge la page de la mosquee et en extrait confData."""
-    request = urllib.request.Request(MAWAQIT_URL % slug,
-                                     headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        html = response.read().decode("utf-8", "replace")
-    return _extract_conf(html)
+    return _extract_conf(telechargement.lire_texte(MAWAQIT_URL % slug,
+                                                   timeout))
 
 
 class PrayerCache:
@@ -77,13 +73,7 @@ class PrayerCache:
 
     def __init__(self, path=CACHE_FILE):
         self.path = path
-        self.data = {}
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as handle:
-                    self.data = json.load(handle)
-            except Exception:
-                self.data = {}
+        self.data = stockage.lit_json(path)
 
     def get(self, slug, ignore_ttl=False):
         entry = self.data.get(slug)
@@ -95,26 +85,24 @@ class PrayerCache:
 
     def put(self, slug, conf):
         self.data[slug] = {"ts": time.time(), "conf": conf}
-        try:
-            with open(self.path, "w", encoding="utf-8") as handle:
-                json.dump(self.data, handle)
-        except Exception:
-            pass
+        stockage.ecrit_json_atomique(self.path, self.data)
 
 
-def load_conf(slug, cache):
+def load_conf(slug, cache, erreurs=None):
     """confData frais si possible, sinon la derniere version connue.
 
     Un cache perime vaut mieux qu'un ecran vide : le calendrier est annuel,
-    donc meme vieux de plusieurs jours il reste juste.
+    donc meme vieux de plusieurs jours il reste juste. L'echec n'est pas
+    tu pour autant : il part dans erreurs, si l'appelant en fournit une.
     """
     conf = cache.get(slug)
     if conf is not None:
         return conf
     try:
         conf = fetch_conf(slug)
-    except (urllib.error.URLError, urllib.error.HTTPError, ValueError,
-            KeyError, OSError):
+    except (urllib.error.URLError, ValueError, KeyError, OSError) as exc:
+        if erreurs is not None:
+            erreurs.append(exc)
         return cache.get(slug, ignore_ttl=True)
     cache.put(slug, conf)
     return conf

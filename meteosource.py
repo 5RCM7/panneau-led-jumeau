@@ -10,12 +10,12 @@ Uniquement la bibliotheque standard, aucun pip install necessaire.
 
 import datetime
 import json
-import os
 import time
 import urllib.error
-import urllib.request
 
-USER_AGENT = "jumeau-panneau-led/1.0 (projet personnel)"
+import stockage
+import telechargement
+
 OPEN_METEO = ("https://api.open-meteo.com/v1/forecast"
               "?latitude=%s&longitude=%s"
               "&current=temperature_2m,apparent_temperature,weather_code,"
@@ -65,13 +65,7 @@ class MeteoCache:
 
     def __init__(self, path=CACHE_FILE):
         self.path = path
-        self.data = {}
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as handle:
-                    self.data = json.load(handle)
-            except Exception:
-                self.data = {}
+        self.data = stockage.lit_json(path)
 
     def get(self, cle, ignore_ttl=False):
         entree = self.data.get(cle)
@@ -83,19 +77,13 @@ class MeteoCache:
 
     def put(self, cle, meteo):
         self.data[cle] = {"ts": time.time(), "meteo": meteo}
-        try:
-            with open(self.path, "w", encoding="utf-8") as handle:
-                json.dump(self.data, handle)
-        except Exception:
-            pass
+        stockage.ecrit_json_atomique(self.path, self.data)
 
 
 def fetch(lat, lon, timeout=10):
     """Interroge Open-Meteo et renvoie le courant et la pluie a venir."""
-    requete = urllib.request.Request(OPEN_METEO % (lat, lon),
-                                     headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(requete, timeout=timeout) as reponse:
-        charge = json.loads(reponse.read().decode("utf-8", "replace"))
+    charge = json.loads(telechargement.lire_texte(OPEN_METEO % (lat, lon),
+                                                  timeout))
     brut = dict(charge.get("current") or {})
     # La prevision voyage telle quelle dans le cache : ce sont des heures
     # absolues, donc le "dans combien de temps" se recalcule a chaque
@@ -136,8 +124,10 @@ def _arrondi(valeur):
         return None
 
 
-def poll(config, cache, now=None):
-    """Un cycle complet : meteo (cache ou reseau) mise en forme pour l'ecran."""
+def charge(config, cache, erreurs=None):
+    """Donnees brutes d'Open-Meteo : cache frais, sinon reseau, sinon cache
+    perime. Un echec reseau part dans erreurs si l'appelant en fournit une :
+    on garde l'ecran, sans taire la panne."""
     lat, lon = config.get("latitude"), config.get("longitude")
     if lat is None or lon is None:
         return None
@@ -147,13 +137,25 @@ def poll(config, cache, now=None):
     if brut is None:
         try:
             brut = fetch(lat, lon)
-        except (urllib.error.URLError, urllib.error.HTTPError, ValueError,
-                OSError):
+        except (urllib.error.URLError, ValueError, OSError) as exc:
+            if erreurs is not None:
+                erreurs.append(exc)
             # un cache perime vaut mieux qu'un ecran vide : la temperature
             # d'il y a une heure reste plus juste que pas de temperature
             brut = cache.get(cle, ignore_ttl=True)
         else:
             cache.put(cle, brut)
+    return brut or None
+
+
+def depuis_brut(brut, config, now=None):
+    """Meteo mise en forme pour l'ecran, a partir de donnees deja en main.
+
+    Aucun reseau : on le refait a chaque demande, comme pour les prieres.
+    L'heure affichee et le decompte de pluie dependent de l'heure qu'il est,
+    pas de celle du dernier sondage, qui peut dater de dix minutes quand
+    Open-Meteo est en panne et que les essais s'espacent.
+    """
     if not brut:
         return None
 
@@ -182,3 +184,8 @@ def poll(config, cache, now=None):
         "jour": jour,
         "lieu": (config.get("meteo_lieu") or "").upper(),
     }
+
+
+def poll(config, cache, now=None, erreurs=None):
+    """Un cycle complet : meteo (cache ou reseau) mise en forme pour l'ecran."""
+    return depuis_brut(charge(config, cache, erreurs), config, now)

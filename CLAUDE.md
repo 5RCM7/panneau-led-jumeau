@@ -17,7 +17,7 @@ Le dépôt est dans `jumeau/`, ce fichier est un cran au-dessus.
 
 ```bash
 python3 server.py            # passerelle + simulateur, http://localhost:8080
-python3 test_hors_ligne.py   # 356 vérifications, aucun réseau requis
+python3 test_hors_ligne.py   # 378 vérifications, aucun réseau requis
 python3 verif_annonce.py     # annonce d'avion, Python contre C compilé (si g++)
 python3 apercu.py [secondes] # rend apercu.png sans lancer le serveur
 python3 apercu_html.py       # rend apercu.html, les vingt scènes
@@ -103,6 +103,10 @@ open-meteo.com (temps)     ──▶ meteosource.py ────┘       annonc
 | `verif_jumeau.py` | comparaison automatique Python / C |
 | `verif_annonce.py` | annonce d'avion : scénario rejoué côté Python et côté C |
 | `verif_croquis.py` | règles du croquis : réseau sur le Core 0, double tampon, secrets |
+| `verif_robustesse.py` | APIs malades simulées : délais, fils isolés, caches |
+| `collecteur.py` | un fil par source, jamais mort, essais espacés en panne |
+| `telechargement.py` | HTTP à échéance stricte et taille plafonnée, pour toutes les sources |
+| `stockage.py` | lecture et écriture **atomique** des caches JSON |
 | `verif_firmware.py` | compile le croquis ESP32 |
 | `echantillons.py` | jeux d'essai des tests |
 | `apercu_scenes.py` | table des scènes de l'aperçu |
@@ -141,6 +145,18 @@ Endpoints : `/` (simulateur), `/flight` (JSON compact ESP32, ~470 octets avec
 vol, prière, journée, météo et heure), `/flight/full`, `/prieres`, `/meteo`,
 `/frame`, `/snapshot.png`.
 
+**Chaque source a son fil de collecte** (`collecteur.py`), lancé par
+`Gateway.demarre()`. Règles à tenir :
+
+- Tout appel réseau passe par `telechargement.lire()` : **échéance totale**,
+  pas seulement un timeout par opération, et erreurs toujours en `URLError`.
+  Ne pas rappeler `urlopen` directement dans une source.
+- Une étape (`_prieres_step`, `_meteo_step`, `_live_step`) **n'écrase l'état
+  qu'en cas de succès**, et renvoie l'erreur au lieu de la taire : le
+  collecteur espace alors les essais et `rapporte()` la rend visible.
+- Les caches s'écrivent par `stockage.ecrit_json_atomique()`, jamais par un
+  `open(..., "w")` direct.
+
 **La rotation des écrans est faite dans `passerelle.py`** et transmise dans
 le champ `sc`. Chaque écran a sa durée propre (`duree_ecrans`), les écrans
 indisponibles sont sautés. Le firmware obéit, il ne rejoue pas la règle. Ne
@@ -156,6 +172,9 @@ l'est pas dans le croquis.
 elle n'est pas gardée depuis le dernier sondage. Le réseau reste à la
 cadence de `_prieres_step`, mais le franchissement d'heure doit être exact :
 l'adhan sonne dessus. Ne pas « optimiser » en remettant un instantané.
+**La météo suit la même règle** (`current_meteo`, depuis `meteo_brut`) :
+pendant une panne les essais s'espacent jusqu'à dix minutes, et l'heure de
+l'écran météo ne doit pas se figer avec eux.
 
 **Une seule exception**, `ecran_liaison` : le firmware l'impose de lui-même
 contre le champ `sc`, après `LIAISON_SEUIL_MS` sans réponse. La passerelle ne
