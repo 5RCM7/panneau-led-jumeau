@@ -26,6 +26,7 @@
 
 #include "font5x7.h"
 #include "audio.h"
+#include "annonce_vol.h"
 
 // Logos des compagnies, generes par export_logos.py depuis logos/*.png.
 // Le fichier n'existe pas tant qu'on n'a pas lance le script : le croquis
@@ -189,6 +190,8 @@ static uint32_t g_alerte = 0;        // millis du debut de l'annonce d'avion
 static uint32_t g_alertePriere = 0;  // idem pour l'annonce de priere
 static uint32_t g_alerteMeteo = 0;   // idem pour l'annonce meteo
 static char g_priereAnnoncee[12] = "";
+static char g_volAnnonce[12] = "";   // dernier indicatif annonce, cf.
+                                     // annonce_vol.h
 static int16_t g_adkar = -1;         // rang de l'entree adkar, choisi par la
                                      // passerelle
 
@@ -332,11 +335,15 @@ void loop() {
       g_prieres = prieres;
       snprintf(g_screen, sizeof(g_screen), "%s", screen);
       if (fresh.ok) {
-        // Nouvel indicatif : on annonce l'avion avant d'afficher ses details
-        if (strcmp(fresh.callsign, g_flight.callsign) != 0) g_alerte = now;
         g_flight = fresh;
         g_lastOk = now;
       }
+      // L'avion s'annonce au premier passage de "sc" a "vol" avec un nouvel
+      // indicatif, pas a son arrivee : pendant une priere, la passerelle le
+      // fait attendre, et l'annonce doit attendre avec lui.
+      if (annonceVolDue(g_screen, fresh.ok, g_flight.callsign, g_volAnnonce,
+                        sizeof(g_volAnnonce)))
+        g_alerte = now;
     }
   }
 

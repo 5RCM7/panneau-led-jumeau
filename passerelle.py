@@ -73,7 +73,10 @@ class Gateway:
             os.path.join(HERE, prieresource.CACHE_FILE))
         self.meteo_cache = meteosource.MeteoCache(
             os.path.join(HERE, meteosource.CACHE_FILE))
-        self.lock = threading.Lock()
+        # Reentrant : _rotation le tient en appelant duree_ecran, qui peut
+        # relire current_prieres et le reprendre. Un verrou simple bloquait
+        # la passerelle pour de bon, cf. test 22l.
+        self.lock = threading.RLock()
         self.flight = None
         # Le confData de la mosquee, garde tel quel : la priere courante s'en
         # deduit a chaque demande, cf. current_prieres.
@@ -322,8 +325,9 @@ class Gateway:
         Meme raison que pour les adkar : une annonce coupee en deux ne dit
         rien, et leur nombre change au gre de la mosquee.
 
-        prieres est passe par _rotation, qui tient deja le verrou : le
-        relire ici bloquerait la passerelle, le verrou n'etant pas reentrant.
+        prieres est passe par _rotation quand il l'a deja sous la main :
+        inutile de le recalculer. Sinon on le relit, ce que le verrou
+        reentrant permet meme depuis _rotation.
         """
         durees = self.config.get("duree_ecrans") or {}
         try:
@@ -537,8 +541,12 @@ class Gateway:
                 self.prieres = info
 
     def _live_step(self):
+        # L'avion a l'ecran, s'il y en a un : il le garde tant qu'aucun autre
+        # n'est nettement plus proche, cf. flightsource.pick_overhead.
+        actuel = self.current()
+        courant = actuel.get("callsign") if actuel else None
         try:
-            flight = flightsource.poll(self.config, self.cache)
+            flight = flightsource.poll(self.config, self.cache, courant)
             with self.lock:
                 self.last_poll = time.time()
                 self.source = "direct"

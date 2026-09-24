@@ -3,6 +3,7 @@
   "longitude": 2.3522,
   "search_radius_nm": 15,
   "max_distance_km": 15,
+  "bascule_km": 1.0,
   "min_altitude_ft": 1000,
   "poll_seconds": 12,
   "hold_seconds": 90,

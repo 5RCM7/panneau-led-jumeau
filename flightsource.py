@@ -101,10 +101,20 @@ def _altitude_ft(aircraft):
         return None
 
 
-def pick_overhead(aircraft_list, lat, lon, min_alt_ft=1000, max_dist_km=20):
-    """Choisit l'avion le plus proche du point d'observation."""
+def pick_overhead(aircraft_list, lat, lon, min_alt_ft=1000, max_dist_km=20,
+                  courant=None, marge_km=0.0):
+    """Choisit l'avion le plus proche du point d'observation.
+
+    Hysteresis : l'avion courant (son indicatif) garde l'ecran tant qu'il
+    reste eligible, sauf si un autre est plus proche de plus de marge_km.
+    Sans elle, deux avions a distance voisine se relaient a chaque sondage,
+    et chaque relais relance l'annonce d'arrivee.
+    """
+    courant = (courant or "").strip().upper()
     best = None
     best_dist = None
+    garde = None
+    garde_dist = None
     for aircraft in aircraft_list:
         try:
             a_lat = float(aircraft["lat"])
@@ -122,8 +132,12 @@ def pick_overhead(aircraft_list, lat, lon, min_alt_ft=1000, max_dist_km=20):
             continue
         if best_dist is None or distance < best_dist:
             best, best_dist = aircraft, distance
+        if courant and callsign.upper() == courant:
+            garde, garde_dist = aircraft, distance
     if best is None:
         return None, None
+    if garde is not None and best_dist > garde_dist - marge_km:
+        return garde, garde_dist
     return best, best_dist
 
 
@@ -259,8 +273,11 @@ def build_flight(aircraft, distance_km, route, appareil=None):
     return flight
 
 
-def poll(config, cache):
-    """Un cycle complet : positions, selection, enrichissement."""
+def poll(config, cache, courant=None):
+    """Un cycle complet : positions, selection, enrichissement.
+
+    courant est l'indicatif deja a l'ecran, que l'hysteresis favorise.
+    """
     lat = config["latitude"]
     lon = config["longitude"]
     aircraft_list = fetch_nearby(lat, lon, config.get("search_radius_nm", 15))
@@ -268,6 +285,8 @@ def poll(config, cache):
         aircraft_list, lat, lon,
         min_alt_ft=config.get("min_altitude_ft", 1000),
         max_dist_km=config.get("max_distance_km", 20),
+        courant=courant,
+        marge_km=config.get("bascule_km", 1.0),
     )
     if aircraft is None:
         return None

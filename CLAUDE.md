@@ -17,7 +17,8 @@ Le dépôt est dans `jumeau/`, ce fichier est un cran au-dessus.
 
 ```bash
 python3 server.py            # passerelle + simulateur, http://localhost:8080
-python3 test_hors_ligne.py   # 321 vérifications, aucun réseau requis
+python3 test_hors_ligne.py   # 341 vérifications, aucun réseau requis
+python3 verif_annonce.py     # annonce d'avion, Python contre C compilé (si g++)
 python3 apercu.py [secondes] # rend apercu.png sans lancer le serveur
 python3 apercu_html.py       # rend apercu.html, les vingt scènes
 python3 export_font.py       # régénère firmware/font5x7.h depuis font5x7.py
@@ -100,6 +101,7 @@ open-meteo.com (temps)     ──▶ meteosource.py ────┘       annonc
 | `passerelle.py` | sondage des sources, rotation, annonces |
 | `composition.py` | charge utile ESP32 et composition de l'image |
 | `verif_jumeau.py` | comparaison automatique Python / C |
+| `verif_annonce.py` | annonce d'avion : scénario rejoué côté Python et côté C |
 | `verif_firmware.py` | compile le croquis ESP32 |
 | `echantillons.py` | jeux d'essai des tests |
 | `apercu_scenes.py` | table des scènes de l'aperçu |
@@ -126,6 +128,7 @@ open-meteo.com (temps)     ──▶ meteosource.py ────┘       annonc
 | `firmware/arabe.h` | **généré** — ne jamais éditer à la main |
 | `firmware/adkar.h` | **généré** — ne jamais éditer à la main |
 | `firmware/ecran_vol.h` | écran des vols côté firmware |
+| `firmware/annonce_vol.h` | règle d'annonce d'avion, sans dépendance Arduino |
 | `firmware/passerelle.h` | client HTTP côté firmware |
 | `firmware/font5x7.h` | **généré** — ne jamais éditer à la main |
 | `firmware/logos.h` | **généré**, non versionné (marques déposées) |
@@ -171,6 +174,17 @@ et les caches qui ménagent les APIs publiques, pas la cadence de l'ESP32.
 pourrait les manquer. Chaque côté les déclenche lui-même, avec la même règle et
 la même durée : changement d'indicatif pour l'avion, changement de prière
 prenant la main pour la mosquée, arrivée du tour pour la météo.
+
+L'annonce d'avion part **au premier passage de `sc` à `vol` avec un nouvel
+indicatif**, pas à l'arrivée de l'avion : pendant un écran de prière la
+passerelle le fait attendre, et le firmware doit attendre avec elle. La règle
+C vit dans `firmware/annonce_vol.h`, que `verif_annonce.py` compile sur le PC
+pour rejouer le même scénario que la passerelle.
+
+L'avion affiché garde l'écran tant qu'il reste dans le rayon, sauf si un autre
+est plus proche de `bascule_km` (1 km par défaut) : sans cette hystérésis,
+deux avions qui se croisent se relaient à chaque sondage et relancent
+l'annonce à chaque fois.
 
 Le champ `sc` porte toujours l'**écran de fond**, jamais le nom d'une annonce :
 le firmware ne connaît que `vol`, `priere`, `horaires` et `meteo`, et

@@ -37,6 +37,7 @@ import panel
 import passerelle
 import prieresource
 import transitions
+import verif_annonce
 import verif_jumeau
 
 LAT, LON = 48.8566, 2.3522
@@ -651,6 +652,76 @@ def main():
     prio.callsign_annonce = None
     check("hors ecran de priere, l'avion s'annonce",
           prio.screen()[0] == "alerte", prio.screen()[0])
+
+    # 22l. Le verrou de la passerelle est reentrant. _rotation le tient en
+    # appelant duree_ecran ; sur l'ecran des annonces sans prieres sous la
+    # main, celle-ci relit current_prieres, qui le reprend. Avec un verrou
+    # simple, la passerelle se bloquait pour de bon.
+    import threading
+    fige = passerelle.Gateway({"duree_ecrans": tempos})
+    fige.rotation_ecran = "annonces"
+    fige.rotation_debut = __import__("time").time()
+    fil = threading.Thread(target=fige._rotation, args=(None, None, None),
+                           daemon=True)
+    fil.start()
+    fil.join(2.0)
+    check("verrou : la rotation ne se bloque pas sur elle-meme",
+          not fil.is_alive())
+
+    # 22m. Hysteresis : l'avion affiche garde l'ecran tant qu'il est dans le
+    # rayon, sauf si un autre est nettement plus proche. Sans elle, deux
+    # avions a distance voisine se relaient a chaque sondage, et chaque
+    # relais relance l'annonce.
+    def avion_a(indicatif, km):
+        # un degre de latitude vaut ~111,2 km
+        return {"hex": indicatif.lower(), "flight": indicatif + " ",
+                "lat": LAT + km / 111.195, "lon": LON, "alt_baro": 30000}
+
+    duo = [avion_a("AAA111", 3.0), avion_a("BBB222", 3.4)]
+    choisi, _ = flightsource.pick_overhead(duo, LAT, LON, 1000, 20)
+    check("hysteresis : sans avion courant, le plus proche gagne",
+          choisi["flight"].strip() == "AAA111")
+    garde, d_garde = flightsource.pick_overhead(
+        duo, LAT, LON, 1000, 20, courant="BBB222", marge_km=1.0)
+    check("hysteresis : l'avion courant garde l'ecran a 400 m pres",
+          garde["flight"].strip() == "BBB222",
+          "%s a %.2f km" % (garde["flight"].strip(), d_garde))
+    loin_duo = [avion_a("AAA111", 1.0), avion_a("BBB222", 3.4)]
+    bascule, _ = flightsource.pick_overhead(
+        loin_duo, LAT, LON, 1000, 20, courant="BBB222", marge_km=1.0)
+    check("hysteresis : un avion plus proche de plus d'un km prend la main",
+          bascule["flight"].strip() == "AAA111")
+    sorti = [avion_a("AAA111", 3.0), avion_a("BBB222", 25.0)]
+    parti, _ = flightsource.pick_overhead(
+        sorti, LAT, LON, 1000, 20, courant="BBB222", marge_km=1.0)
+    check("hysteresis : l'avion courant sorti du rayon cede la place",
+          parti["flight"].strip() == "AAA111")
+    check("hysteresis : l'indicatif courant se compare sans casse ni espace",
+          flightsource.pick_overhead(duo, LAT, LON, 1000, 20,
+                                     courant=" bbb222",
+                                     marge_km=1.0)[0]["flight"].strip()
+          == "BBB222")
+
+    # Deux avions qui se croisent : sur dix sondages, un seul changement
+    # d'indicatif, donc une seule annonce, au lieu d'un a chaque sondage.
+    import unittest.mock
+    passes = [[avion_a("AAA111", 3.0 + 0.1 * (n % 2)),
+               avion_a("BBB222", 3.05 - 0.1 * (n % 2))] for n in range(10)]
+    croise = passerelle.Gateway({"latitude": LAT, "longitude": LON,
+                                 "bascule_km": 1.0})
+    vus = []
+    with unittest.mock.patch.object(flightsource, "fetch_nearby",
+                                    side_effect=passes), \
+            unittest.mock.patch.object(flightsource, "lookup_route",
+                                       return_value={}), \
+            unittest.mock.patch.object(flightsource, "lookup_aircraft",
+                                       return_value={}):
+        for _ in passes:
+            croise._live_step()
+            vus.append(croise.flight["callsign"])
+    changements = sum(1 for a, b in zip(vus, vus[1:]) if a != b)
+    check("hysteresis : deux avions qui se croisent ne clignotent pas",
+          changements == 0, " ".join(vus))
 
     # 22j. Veille nocturne : la luminosite suit l'heure
     veille = passerelle.Gateway({"luminosite_jour": 40, "luminosite_nuit": 8,
@@ -1313,6 +1384,11 @@ def main():
 
     # 22d. Regle du jumeau, verifiee dans son propre module
     verif_jumeau.verifie(check)
+
+    # 22n. Annonce d'avion : meme comportement des deux cotes, verifie en
+    # compilant firmware/annonce_vol.h (ignore sans compilateur C++)
+    if not verif_annonce.verifie(check):
+        print("compilateur C++ introuvable : annonce d'avion non comparee")
 
     # 23. Le cache des logos distingue les dossiers
     panel._LOGO_CACHE.clear()

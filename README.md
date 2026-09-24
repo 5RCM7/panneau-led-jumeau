@@ -34,6 +34,7 @@ Avant le premier lancement, mettez vos coordonnées dans `config.json` :
 | `latitude`, `longitude` | position de la maison (l'exemple pointe le centre de Paris) |
 | `search_radius_nm` | rayon interrogé auprès d'adsb.lol, en milles nautiques |
 | `max_distance_km` | au-delà, l'avion n'est plus « au-dessus » |
+| `bascule_km` | hystérésis : l'avion affiché garde l'écran tant qu'aucun autre n'est plus proche de cette marge (1 km par défaut) |
 | `min_altitude_ft` | filtre les avions au sol et en approche basse |
 | `poll_seconds` | cadence d'interrogation (12 s est raisonnable) |
 | `hold_seconds` | durée d'affichage du dernier vol connu |
