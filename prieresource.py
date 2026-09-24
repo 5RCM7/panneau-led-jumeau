@@ -62,7 +62,7 @@ def _extract_conf(html):
     raise ValueError("confData incomplet")
 
 
-def fetch_conf(slug, timeout=15):
+def fetch_conf(slug, timeout=telechargement.DELAI_MAX):
     """Telecharge la page de la mosquee et en extrait confData."""
     return _extract_conf(telechargement.lire_texte(MAWAQIT_URL % slug,
                                                    timeout))

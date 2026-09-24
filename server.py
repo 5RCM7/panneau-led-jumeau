@@ -85,7 +85,7 @@ async function tick() {
       '\\ndernier sondage : ' + (data.status.last_poll ? new Date(data.status.last_poll*1000).toLocaleTimeString('fr-FR') : '-') +
       Object.entries(data.status.sources || {}).map(([nom, s]) =>
         '\\n' + nom + ' : ' + (s.ok ? 'ok' : 'EN PANNE (' + s.echecs + ')') +
-        (s.dernier_succes ? ', ' + new Date(s.dernier_succes*1000).toLocaleTimeString('fr-FR') : '') +
+        (s.age_s === null ? ', jamais recue' : ', donnee de ' + (s.age_s < 120 ? s.age_s + ' s' : Math.round(s.age_s / 60) + ' min') + (s.ok ? '' : ' (PERIMEE)')) +
         (s.erreur ? '\\n  ' + s.erreur : '')).join('');
     document.getElementById('json').textContent = JSON.stringify(data.flight, null, 1);
   } catch (e) { /* le serveur redemarre peut-etre */ }

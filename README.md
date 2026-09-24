@@ -619,17 +619,20 @@ et le panneau reste juste même si le réseau tombe plusieurs semaines.
   fil (`collecteur.py`) : Mawaqit en retard ne retarde plus les avions, et une
   exception imprévue ne tue plus la collecte.
 - **Délais stricts.** Chaque requête a une échéance, connexion et lecture
-  comprises (`telechargement.py`) : 8 s pour les vols, 10 s pour la météo,
-  15 s pour Mawaqit. Un serveur qui distille un octet par seconde est
-  abandonné à l'heure, et une réponse de plus de 4 Mo est coupée.
+  comprises, de **5 s au plus** pour toutes les sources (`telechargement.py`,
+  `DELAI_MAX`). Un serveur qui distille un octet par seconde est abandonné à
+  l'heure, et une réponse de plus de 4 Mo est coupée.
 - **Dernière valeur connue.** Une source en panne garde son dernier état :
   cache périmé sur disque, sinon valeur en mémoire. Un avion déjà affiché le
   reste jusqu'à `hold_seconds`.
 - **Pas de martèlement.** Après un échec, la source attend deux fois plus
   longtemps avant de réessayer, jusqu'à dix minutes, puis revient à sa cadence
   dès le premier succès.
-- **Pannes visibles.** Le simulateur affiche l'état de chaque source (dernier
-  succès, nombre d'échecs, dernière erreur), aussi exposé dans `/frame`.
+- **Pannes visibles.** Le simulateur affiche l'état de chaque source : âge de
+  la dernière donnée reçue, marquée PERIMEE pendant une panne, nombre
+  d'échecs et dernière erreur (aussi dans `/frame`, champ `age_s`). La console
+  du serveur écrit une ligne à l'entrée en panne et une au rétablissement,
+  pas une par essai raté.
 - **Caches sûrs.** Les trois caches s'écrivent de façon atomique (fichier
   provisoire puis `os.replace`, cf. `stockage.py`) : un arrêt brutal ne laisse
   jamais un fichier à moitié écrit. Le cache des routes purge ses entrées de

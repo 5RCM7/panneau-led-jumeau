@@ -17,7 +17,7 @@ Le dépôt est dans `jumeau/`, ce fichier est un cran au-dessus.
 
 ```bash
 python3 server.py            # passerelle + simulateur, http://localhost:8080
-python3 test_hors_ligne.py   # 378 vérifications, aucun réseau requis
+python3 test_hors_ligne.py   # 384 vérifications, aucun réseau requis
 python3 verif_annonce.py     # annonce d'avion, Python contre C compilé (si g++)
 python3 apercu.py [secondes] # rend apercu.png sans lancer le serveur
 python3 apercu_html.py       # rend apercu.html, les vingt scènes
@@ -149,7 +149,8 @@ vol, prière, journée, météo et heure), `/flight/full`, `/prieres`, `/meteo`,
 `Gateway.demarre()`. Règles à tenir :
 
 - Tout appel réseau passe par `telechargement.lire()` : **échéance totale**,
-  pas seulement un timeout par opération, et erreurs toujours en `URLError`.
+  pas seulement un timeout par opération, plafonnée à `DELAI_MAX` (5 s), et
+  erreurs toujours en `URLError`.
   Ne pas rappeler `urlopen` directement dans une source.
 - Une étape (`_prieres_step`, `_meteo_step`, `_live_step`) **n'écrase l'état
   qu'en cas de succès**, et renvoie l'erreur au lieu de la taire : le

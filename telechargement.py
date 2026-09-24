@@ -22,6 +22,10 @@ import urllib.error
 import urllib.request
 
 USER_AGENT = "jumeau-panneau-led/1.0 (projet personnel)"
+# Echeance de chaque requete sortante, connexion et lecture comprises. Une
+# seule valeur pour toutes les sources : au-dela de cinq secondes, une API
+# communautaire est en difficulte, et on sert la derniere valeur connue.
+DELAI_MAX = 5.0
 TAILLE_MAX = 4 * 1024 * 1024  # la page Mawaqit, la plus lourde, fait ~1 Mo
 BLOC = 64 * 1024
 
@@ -47,8 +51,12 @@ def _regle_socket(reponse, secondes):
         pass
 
 
-def lire(url, delai, entetes=None, taille_max=TAILLE_MAX):
-    """Octets de la reponse, en delai secondes au plus, connexion comprise."""
+def lire(url, delai=DELAI_MAX, entetes=None, taille_max=TAILLE_MAX):
+    """Octets de la reponse, en delai secondes au plus, connexion comprise.
+
+    Jamais plus que DELAI_MAX, meme si l'appelant demande davantage.
+    """
+    delai = min(float(delai), DELAI_MAX)
     echeance = time.monotonic() + delai
     requete = urllib.request.Request(
         url, headers=dict(entetes or {}, **{"User-Agent": USER_AGENT}))
@@ -79,5 +87,5 @@ def lire(url, delai, entetes=None, taille_max=TAILLE_MAX):
         raise urllib.error.URLError(exc) from exc
 
 
-def lire_texte(url, delai, entetes=None, taille_max=TAILLE_MAX):
+def lire_texte(url, delai=DELAI_MAX, entetes=None, taille_max=TAILLE_MAX):
     return lire(url, delai, entetes, taille_max).decode("utf-8", "replace")

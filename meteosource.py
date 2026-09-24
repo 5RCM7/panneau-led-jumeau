@@ -80,7 +80,7 @@ class MeteoCache:
         stockage.ecrit_json_atomique(self.path, self.data)
 
 
-def fetch(lat, lon, timeout=10):
+def fetch(lat, lon, timeout=telechargement.DELAI_MAX):
     """Interroge Open-Meteo et renvoie le courant et la pluie a venir."""
     charge = json.loads(telechargement.lire_texte(OPEN_METEO % (lat, lon),
                                                   timeout))

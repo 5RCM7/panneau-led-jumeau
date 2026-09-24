@@ -30,7 +30,7 @@ CLE_APPAREIL = "AV:"
 
 ROUTE_TTL = 12 * 3600  # une route de vol change rarement dans la journee
 CACHE_FILE = "routes_cache.json"
-DELAI_S = 8  # par appel, connexion et lecture comprises
+DELAI_S = telechargement.DELAI_MAX  # par appel, connexion et lecture comprises
 
 
 def _get_json(url, timeout=None):

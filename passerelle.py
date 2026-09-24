@@ -511,12 +511,30 @@ class Gateway:
                 "depuis_ms": depuis_ms,
             }
 
-    def status(self):
+    def status(self, maintenant=None):
+        """Etat de la passerelle, et la sante de chaque source.
+
+        age_s dit depuis combien de temps la derniere donnee reussie a ete
+        recue : c'est ce qui distingue une donnee fraiche d'une derniere
+        valeur connue servie pendant une panne.
+        """
+        maintenant = maintenant or time.time()
         with self.lock:
+            sources = {}
+            for nom, etat in self.sources.items():
+                copie = dict(etat)
+                succes = etat.get("dernier_succes")
+                copie["age_s"] = (int(maintenant - succes) if succes
+                                  else None)
+                sources[nom] = copie
             return {"source": self.source, "error": self.error,
                     "last_poll": self.last_poll, "last_seen": self.last_seen,
-                    "sources": {nom: dict(etat)
-                                for nom, etat in self.sources.items()}}
+                    "sources": sources}
+
+    def journal(self, ligne):
+        """Console du serveur : les pannes s'y lisent sans ouvrir le
+        simulateur. Remplacable, pour les tests."""
+        print("[%s] %s" % (time.strftime("%H:%M:%S"), ligne), flush=True)
 
     def rapporte(self, nom, erreur, duree):
         """Sante d'une source apres chaque tour de son collecteur.
@@ -530,6 +548,8 @@ class Gateway:
             etat = self.sources.setdefault(nom, {
                 "ok": None, "erreur": None, "dernier_succes": None,
                 "echecs": 0})
+            avant = etat["ok"]
+            echecs_avant = etat["echecs"]
             etat["derniere_tentative"] = maintenant
             etat["duree_ms"] = int(duree * 1000)
             if erreur:
@@ -543,6 +563,18 @@ class Gateway:
                 etat["erreur"] = None
                 etat["dernier_succes"] = maintenant
                 etat["echecs"] = 0
+            ligne = None
+            if erreur and avant is not False:
+                # une ligne a l'entree en panne, pas une par essai rate
+                succes = etat["dernier_succes"]
+                ligne = "%s EN PANNE : %s -- derniere valeur connue %s" % (
+                    nom, etat["erreur"],
+                    "du " + time.strftime("%H:%M:%S", time.localtime(succes))
+                    if succes else ": aucune")
+            elif not erreur and avant is False:
+                ligne = "%s retablie apres %d echec(s)" % (nom, echecs_avant)
+        if ligne:
+            self.journal(ligne)
 
     def _demo_step(self):
         flight = dict(DEMO_FLIGHTS[self._demo_index % len(DEMO_FLIGHTS)])

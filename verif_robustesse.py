@@ -107,6 +107,31 @@ def _telechargement(check, base):
     check("http : un refus de connexion est une URLError",
           isinstance(res, urllib.error.URLError), type(res).__name__)
 
+    # Plafond de 5 s : meme un appelant qui demande une minute est coupe
+    with unittest.mock.patch.object(telechargement, "DELAI_MAX", 0.5):
+        res, duree = _chrono(lambda: telechargement.lire(base + "/muet", 60))
+    check("http : aucune requete ne depasse DELAI_MAX, quoi qu'on demande",
+          isinstance(res, telechargement.DelaiDepasse) and duree < 0.9,
+          "%.2f s pour 60 demandees" % duree)
+    check("http : DELAI_MAX vaut au plus 5 s", telechargement.DELAI_MAX <= 5)
+    delais = {}
+
+    def espion(nom):
+        def lire(url, delai=telechargement.DELAI_MAX, *args, **kwargs):
+            delais[nom] = delai
+            raise telechargement.DelaiDepasse("espion")
+        return lire
+    for nom, appel in (
+            ("vols", lambda: flightsource._get_json("http://x/")),
+            ("prieres", lambda: prieresource.fetch_conf("essai")),
+            ("meteo", lambda: meteosource.fetch(48.8, 2.3))):
+        with unittest.mock.patch.object(telechargement, "lire_texte",
+                                        espion(nom)):
+            _chrono(appel)
+    check("http : les trois sources demandent 5 s au plus",
+          len(delais) == 3 and max(delais.values()) <= 5,
+          ", ".join("%s %.0f s" % kv for kv in sorted(delais.items())))
+
     # Une route en retard ne doit plus faire tomber tout le sondage : le
     # TimeoutError brut traversait les except de lookup_route.
     cache = flightsource.RouteCache(os.devnull)
@@ -167,6 +192,7 @@ def _collecteurs(check):
 def _derniere_valeur(check):
     g = passerelle.Gateway({"latitude": 48.85, "longitude": 2.35,
                             "mosquee_slug": "essai"})
+    g.journal = lambda ligne: None
     g.meteo = {"temperature": 18, "icone": "nuage"}
     panne = urllib.error.URLError("open-meteo injoignable")
 
@@ -224,6 +250,32 @@ def _derniere_valeur(check):
           g.current() == {"callsign": "AFR1"} and erreur is panne)
 
 
+def _observabilite(check):
+    g = passerelle.Gateway({})
+    lignes = []
+    g.journal = lignes.append
+    panne = urllib.error.URLError("adsb.lol injoignable")
+    g.rapporte("vols", None, 0.1)
+    for _ in range(3):
+        g.rapporte("vols", panne, 5.0)
+    g.rapporte("vols", None, 0.2)
+    check("console : une ligne a l'entree en panne, une au retablissement",
+          len(lignes) == 2 and "EN PANNE" in lignes[0]
+          and "derniere valeur connue du" in lignes[0]
+          and "retablie apres 3" in lignes[1], " | ".join(lignes))
+    g.rapporte("vols", panne, 5.0)
+    succes = g.sources["vols"]["dernier_succes"]
+    etat = g.status(maintenant=succes + 125)["sources"]["vols"]
+    check("etat : l'age de la derniere donnee reussie est expose",
+          etat["age_s"] == 125 and etat["ok"] is False, str(etat["age_s"]))
+    g2 = passerelle.Gateway({})
+    g2.journal = lignes.append
+    g2.rapporte("meteo", panne, 5.0)
+    check("etat : une source jamais reussie n'a pas d'age",
+          g2.status()["sources"]["meteo"]["age_s"] is None
+          and "aucune" in lignes[-1], lignes[-1])
+
+
 def _caches(check):
     with tempfile.TemporaryDirectory() as dossier:
         chemin = os.path.join(dossier, "routes.json")
@@ -266,6 +318,7 @@ def verifie(check):
         serveur.shutdown()
     _collecteurs(check)
     _derniere_valeur(check)
+    _observabilite(check)
     _caches(check)
 
 
