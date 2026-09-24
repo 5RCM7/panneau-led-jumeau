@@ -4,10 +4,28 @@
 // passerelle qui mene la rotation : le firmware obeit au champ "sc" sans
 // rejouer la regle de son cote.
 //
+// Ce fichier tourne sur le Core 0, dans la tache reseau (cf. reseau.h) :
+// il ne touche JAMAIS a l'affichage. Tout ce qu'il lit part dans une
+// EtatPasserelle, que le Core 1 recopie et applique entre deux images. Meme
+// la luminosite voyage ainsi, au lieu d'appeler setBrightness8() d'ici.
+//
 // Inclus depuis panneau_vols.ino APRES les structures Flight et Prieres.
 
 #ifndef PASSERELLE_H
 #define PASSERELLE_H
+
+// Tout ce qu'une reponse de la passerelle apporte, en un bloc copiable.
+struct EtatPasserelle {
+  Flight flight;
+  Prieres prieres;
+  Meteo meteo;
+  Heure heure;
+  Usage usage;
+  Audio son;
+  char screen[12] = "";  // cf. g_screen : "horaires" et son zero final
+  int16_t adkar = -1;    // rang de l'entree adkar, -1 sans
+  int16_t br = -1;       // luminosite 0-255, -1 si absente
+};
 
 // ------------------------------------------------------------- passerelle
 static void upperCopy(char *dst, size_t size, const char *src) {
@@ -44,15 +62,16 @@ static void buildTicker(Flight &f) {
 // Recupere en un seul appel le vol, la priere, et l'ecran a afficher.
 // C'est la passerelle qui arbitre entre les deux ecrans : le firmware obeit
 // au champ "sc" sans rejouer la regle de priorite de son cote.
-static bool fetchGateway(Flight &outFlight, Prieres &outPrieres,
-                         Meteo &outMeteo, Heure &outHeure, Usage &outUsage,
-                         Audio &outAudio, char *screen, size_t screenSize,
-                         int16_t &outAdkar) {
-  if (WiFi.status() != WL_CONNECTED) return false;
+//
+// Bloquant, et c'est voulu : il ne tourne que dans la tache reseau. Les
+// delais bornent seulement la duree d'un essai, l'affichage ne les voit pas.
+static bool fetchGateway(const char *url, EtatPasserelle &out) {
+  if (WiFi.status() != WL_CONNECTED || !url[0]) return false;
 
   HTTPClient http;
-  http.setTimeout(6000);
-  if (!http.begin(GATEWAY_URL)) return false;
+  http.setConnectTimeout(2000);
+  http.setTimeout(4000);
+  if (!http.begin(url)) return false;
 
   int code = http.GET();
   if (code != 200) {
@@ -65,11 +84,11 @@ static bool fetchGateway(Flight &outFlight, Prieres &outPrieres,
   http.end();
   if (err) return false;
 
-  snprintf(screen, screenSize, "%s", doc["sc"] | "");
+  snprintf(out.screen, sizeof(out.screen), "%s", doc["sc"] | "");
 
   // Rang de l'entree adkar : la passerelle le choisit, comme elle choisit
   // l'ecran. -1 quand elle n'en envoie pas, et l'ecran est alors saute.
-  outAdkar = doc["ad"] | -1;
+  out.adkar = doc["ad"] | -1;
 
   Prieres p;
   JsonObjectConst pr = doc["pr"];
@@ -89,7 +108,7 @@ static bool fetchGateway(Flight &outFlight, Prieres &outPrieres,
     p.rang = pr["rg"] | -1;
     p.joumoua = pr["jm"] | false;
   }
-  outPrieres = p;
+  out.prieres = p;
 
   Meteo m;
   JsonObjectConst mt = doc["mt"];
@@ -105,7 +124,7 @@ static bool fetchGateway(Flight &outFlight, Prieres &outPrieres,
     upperCopy(m.lieu, sizeof(m.lieu), mt["l"] | "");
     upperCopy(m.heure, sizeof(m.heure), mt["h"] | "");
   }
-  outMeteo = m;
+  out.meteo = m;
 
   Heure hr;
   JsonObjectConst ho = doc["hr"];
@@ -114,7 +133,7 @@ static bool fetchGateway(Flight &outFlight, Prieres &outPrieres,
     upperCopy(hr.heure, sizeof(hr.heure), ho["h"] | "");
     upperCopy(hr.date, sizeof(hr.date), ho["d"] | "");
   }
-  outHeure = hr;
+  out.heure = hr;
 
   Audio au;
   JsonObjectConst ao = doc["au"];
@@ -124,7 +143,7 @@ static bool fetchGateway(Flight &outFlight, Prieres &outPrieres,
     au.volume = ao["v"] | -1;
     snprintf(au.cue, sizeof(au.cue), "%s", ao["c"] | "");
   }
-  outAudio = au;
+  out.son = au;
 
   Usage u;
   JsonObjectConst cl = doc["cl"];
@@ -137,11 +156,12 @@ static bool fetchGateway(Flight &outFlight, Prieres &outPrieres,
     upperCopy(u.resetA, sizeof(u.resetA), cl["ta"] | "");
     upperCopy(u.resetB, sizeof(u.resetB), cl["tb"] | "");
   }
-  outUsage = u;
+  out.usage = u;
 
-  // Luminosite selon l'heure, decidee par la passerelle comme le reste
+  // Luminosite selon l'heure, decidee par la passerelle comme le reste.
+  // Appliquee par le Core 1 : le DMA de l'affichage n'est pas a nous ici.
   int16_t br = doc["br"] | -1;
-  if (br >= 0 && br <= 255) dma->setBrightness8((uint8_t)br);
+  out.br = (br >= 0 && br <= 255) ? br : -1;
 
   Flight f;
   f.ok = doc["ok"] | false;
@@ -157,7 +177,7 @@ static bool fetchGateway(Flight &outFlight, Prieres &outPrieres,
     f.km = doc["km"] | -1.0f;
     buildTicker(f);
   }
-  outFlight = f;
+  out.flight = f;
   return true;
 }
 

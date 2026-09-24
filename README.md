@@ -652,9 +652,25 @@ Masse commune entre l'ESP32 et l'alimentation des panneaux.
 2. Régler **Outils > Partition Scheme > Huge APP (3MB No OTA)**. Avec le
    schéma par défaut le croquis remplit 87 % des 1,3 Mo et il ne reste pas la
    place des logos ; en Huge APP il occupe 36 % de 3,1 Mo.
-3. Ouvrir `firmware/panneau_vols.ino`, renseigner `WIFI_SSID`, `WIFI_PASS` et
-   `GATEWAY_URL` (l'adresse IP de la machine qui fait tourner `server.py`).
+3. Copier `firmware/secrets.exemple.h` en `firmware/secrets.h` et y renseigner
+   `WIFI_SSID`, `WIFI_PASS`, `GATEWAY_HOST` (le nom mDNS du PC qui fait
+   tourner `server.py`, sans `.local`), `GATEWAY_IP` (l'adresse de repli) et
+   `GATEWAY_PORT`. `secrets.h` est ignoré par git : le mot de passe Wi-Fi ne
+   quitte pas la machine. Sans lui, le croquis compile avec le modèle et le
+   signale par un avertissement.
 4. Téléverser.
+
+Le panneau cherche la passerelle par mDNS (`GATEWAY_HOST.local`), puis retombe
+sur `GATEWAY_IP`. Il redemande l'adresse après trois échecs d'affilée, ce qui
+suit le PC s'il change d'adresse. Lui-même s'annonce en `panneau-vols.local`.
+Windows 10+, macOS et Linux avec Avahi publient leur nom d'hôte d'eux-mêmes.
+
+**L'affichage ne fige jamais.** Le Wi-Fi et les requêtes HTTP tournent dans
+une tâche FreeRTOS sur le Core 0 (`firmware/reseau.h`) ; `loop()` dessine sur
+le Core 1 à 25 images par seconde, en double tampon, et ne fait que recopier
+le dernier état reçu, sans jamais attendre le réseau. Passerelle plantée ou
+Wi-Fi coupé, les défilements continuent et l'écran de liaison perdue prend le
+relais.
 
 Occupation mesurée avec 60 logos : **36 %** de la mémoire programme et **15 %**
 de la SRAM, soit 276 Ko libres pour les variables locales. L'ESP32-S3 compile

@@ -64,9 +64,15 @@ def main():
         copies = sorted(os.listdir(cible))
         print("croquis : %d fichiers (%s)" % (len(copies), ", ".join(copies)))
 
-        resultat = subprocess.run(
-            [cli, "compile", "--fqbn", FQBN, "--warnings", "default", cible],
-            capture_output=True, text=True)
+        commande = [cli, "compile", "--fqbn", FQBN, "--warnings", "default"]
+        # ctags ne sert qu'a generer les prototypes, dont le croquis n'a pas
+        # besoin. Sur une machine qui ne peut pas telecharger celui
+        # d'arduino.cc, ARDUINO_CTAGS designe un dossier contenant un autre.
+        if os.environ.get("ARDUINO_CTAGS"):
+            commande += ["--build-property", "runtime.tools.ctags.path=%s"
+                         % os.environ["ARDUINO_CTAGS"]]
+        resultat = subprocess.run(commande + [cible],
+                                  capture_output=True, text=True)
 
     sortie = (resultat.stdout or "") + (resultat.stderr or "")
     if resultat.returncode == 0:

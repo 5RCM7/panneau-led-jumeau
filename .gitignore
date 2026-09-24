@@ -7,4 +7,5 @@ meteo_cache.json
 config.json
 apercu.html
 firmware/logos.h
+firmware/secrets.h
 usage.json

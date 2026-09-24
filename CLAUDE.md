@@ -17,7 +17,7 @@ Le dépôt est dans `jumeau/`, ce fichier est un cran au-dessus.
 
 ```bash
 python3 server.py            # passerelle + simulateur, http://localhost:8080
-python3 test_hors_ligne.py   # 341 vérifications, aucun réseau requis
+python3 test_hors_ligne.py   # 356 vérifications, aucun réseau requis
 python3 verif_annonce.py     # annonce d'avion, Python contre C compilé (si g++)
 python3 apercu.py [secondes] # rend apercu.png sans lancer le serveur
 python3 apercu_html.py       # rend apercu.html, les vingt scènes
@@ -102,6 +102,7 @@ open-meteo.com (temps)     ──▶ meteosource.py ────┘       annonc
 | `composition.py` | charge utile ESP32 et composition de l'image |
 | `verif_jumeau.py` | comparaison automatique Python / C |
 | `verif_annonce.py` | annonce d'avion : scénario rejoué côté Python et côté C |
+| `verif_croquis.py` | règles du croquis : réseau sur le Core 0, double tampon, secrets |
 | `verif_firmware.py` | compile le croquis ESP32 |
 | `echantillons.py` | jeux d'essai des tests |
 | `apercu_scenes.py` | table des scènes de l'aperçu |
@@ -129,7 +130,9 @@ open-meteo.com (temps)     ──▶ meteosource.py ────┘       annonc
 | `firmware/adkar.h` | **généré** — ne jamais éditer à la main |
 | `firmware/ecran_vol.h` | écran des vols côté firmware |
 | `firmware/annonce_vol.h` | règle d'annonce d'avion, sans dépendance Arduino |
-| `firmware/passerelle.h` | client HTTP côté firmware |
+| `firmware/passerelle.h` | client HTTP côté firmware, sans jamais toucher l'affichage |
+| `firmware/reseau.h` | tâche réseau sur le Core 0, Wi-Fi, mDNS, état partagé |
+| `firmware/secrets.exemple.h` | modèle de `secrets.h` (Wi-Fi, passerelle), lui **non versionné** |
 | `firmware/font5x7.h` | **généré** — ne jamais éditer à la main |
 | `firmware/logos.h` | **généré**, non versionné (marques déposées) |
 | `test_hors_ligne.py` | tests avec réponses au format réel des APIs |
@@ -164,6 +167,26 @@ Ordre de priorité : adhan et iqama d'abord, puis les écrans de prière qu'un
 avion **ne doit jamais interrompre** (`ECRANS_PRIERE`), puis l'annonce
 d'arrivée d'un avion, puis la rotation. Sur une horloge murale, l'heure de la
 prière passe avant l'avion qui traverse.
+
+**Le firmware est à deux cœurs, et l'affichage ne fige jamais.** Le Wi-Fi,
+le mDNS et `fetchGateway()` tournent dans une tâche FreeRTOS épinglée sur le
+Core 0 (`firmware/reseau.h`). `loop()` dessine sur le Core 1 et ne fait que
+recopier le dernier `EtatPasserelle` reçu, avec `xSemaphoreTake(g_verrou, 0)` :
+délai nul, il ne l'attend jamais. Règles à tenir :
+
+- **Rien de bloquant dans `loop()`** : pas de réseau, pas de `delay()` autre que
+  la cadence d'image. Un appel HTTP y figerait l'écran jusqu'à son délai.
+- **Le Core 0 ne touche jamais `dma`**, pas même `setBrightness8()` : la
+  luminosité voyage dans `EtatPasserelle.br` et le Core 1 l'applique.
+- **Double tampon** (`cfg.double_buff = true`) : on efface et dessine le
+  tampon caché, puis `flipDMABuffer()`. La bibliothèque n'attend pas la fin
+  de l'image en cours : `APRES_FLIP_MS` (une image à 60 Hz) sépare l'échange
+  de la prochaine écriture. Ne pas le réduire.
+- Wi-Fi et adresse de la passerelle sont dans `firmware/secrets.h`, **ignoré
+  par git** ; `secrets.exemple.h` sert de modèle. Ne jamais les réécrire en dur.
+
+`verif_croquis.py`, appelé par le test hors ligne, vérifie ces règles dans le
+source C.
 
 `POLL_MS` est à 3 s côté firmware, et non 12 : c'est une requête sur le réseau
 local, gratuite, et il faut suivre une rotation de 30 s. Ce sont `poll_seconds`

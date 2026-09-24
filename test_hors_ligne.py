@@ -38,6 +38,7 @@ import passerelle
 import prieresource
 import transitions
 import verif_annonce
+import verif_croquis
 import verif_jumeau
 
 LAT, LON = 48.8566, 2.3522
@@ -1384,6 +1385,9 @@ def main():
 
     # 22d. Regle du jumeau, verifiee dans son propre module
     verif_jumeau.verifie(check)
+
+    # 22o. Regles du croquis : reseau sur le Core 0, double tampon, secrets
+    verif_croquis.verifie(check)
 
     # 22n. Annonce d'avion : meme comportement des deux cotes, verifie en
     # compilant firmware/annonce_vol.h (ignore sans compilateur C++)

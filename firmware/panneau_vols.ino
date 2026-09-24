@@ -37,11 +37,15 @@
 #endif
 
 // ---------------------------------------------------------------- reglages
-static const char *WIFI_SSID = "TON_RESEAU";
-static const char *WIFI_PASS = "TON_MOT_DE_PASSE";
-
-// Adresse de la passerelle Python (server.py) sur le reseau local.
-static const char *GATEWAY_URL = "http://192.168.1.20:8080/flight";
+// Wi-Fi et adresse de la passerelle : dans firmware/secrets.h, ignore par
+// git. Copier secrets.exemple.h pour le creer. Sans lui, le croquis compile
+// avec le modele, ce qui suffit a la verification mais pas au mur.
+#if __has_include("secrets.h")
+#include "secrets.h"
+#else
+#warning "firmware/secrets.h absent : copier secrets.exemple.h et le remplir"
+#include "secrets.exemple.h"
+#endif
 
 // Cadence d'interrogation de la passerelle. C'est une requete sur le reseau
 // local, pas un appel d'API : elle ne coute rien et c'est la passerelle qui
@@ -49,6 +53,15 @@ static const char *GATEWAY_URL = "http://192.168.1.20:8080/flight";
 // secondes suffisent pour suivre une rotation d'ecran de trente secondes.
 static const uint32_t POLL_MS = 3000;
 static const uint32_t HOLD_MS = 90000;   // on garde le dernier vol 90 s
+// Une image toutes les 40 ms, soit 25 par seconde : le defilement est
+// fluide, et la boucle d'affichage ne fait jamais rien d'autre.
+static const uint32_t IMAGE_MS = 40;
+// flipDMABuffer() ne fait que designer le prochain tampon : le DMA finit
+// d'abord l'image en cours, qu'il lit dans celui qui va nous revenir.
+// L'effacer tout de suite dechirerait cette image. A 60 Hz de rafraichissement
+// minimal (reglage par defaut de la bibliotheque), une image dure 16,7 ms :
+// on en laisse passer une entiere avant de toucher au tampon rendu.
+static const uint32_t APRES_FLIP_MS = 17;
 
 // Luminosite de depart, avant la premiere reponse de la passerelle. Celle-ci
 // envoie ensuite un niveau selon l'heure dans le champ "br" : un panneau a
@@ -112,7 +125,6 @@ struct Flight {
 };
 
 static Flight g_flight;
-static uint32_t g_lastPoll = 0;
 static uint32_t g_lastOk = 0;
 // Derniere reponse de la passerelle. Sans elle, l'heure affichee se fige :
 // l'ESP32 n'a pas d'horloge, cf. ecran_liaison.h.
@@ -255,6 +267,12 @@ static void dessineEcran(uint8_t ecran, uint32_t nowMs) {
 }
 
 #include "passerelle.h"
+#include "reseau.h"
+
+// Derniere reponse recopiee depuis la tache reseau, et son numero
+static EtatPasserelle g_recu;
+static uint32_t g_numeroLu = 0;
+static int16_t g_luminosite = BRIGHTNESS;  // niveau applique au panneau
 
 // ------------------------------------------------------------------ setup
 void setup() {
@@ -279,72 +297,72 @@ void setup() {
   cfg.gpio.clk = P_CLK;
   cfg.clkphase = false;  // a basculer si l'image est decalee d'une colonne
 
+  // Double tampon : on dessine dans le tampon cache pendant que le DMA
+  // affiche l'autre, puis flipDMABuffer() les echange. Sans lui, chaque
+  // image etait effacee puis redessinee sous les yeux : scintillement, et
+  // transitions dechirees. Coute un second tampon DMA, quelques dizaines
+  // de Ko de SRAM sur les ~270 libres.
+  cfg.double_buff = true;
+
   dma = new MatrixPanel_I2S_DMA(cfg);
-  dma->begin();
+  if (!dma->begin()) Serial.println("panneau : allocation DMA impossible");
   dma->setBrightness8(BRIGHTNESS);
   dma->clearScreen();
+  dma->flipDMABuffer();
 
   audioSetup();
 
-  drawText(6, 12, "CONNEXION", RGB_SECONDAIRE, 0, WIDTH_PX - 1);
-
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) delay(250);
-
-  Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString()
-                                               : String("wifi absent"));
-  g_lastPoll = millis() - POLL_MS;
+  // Wi-Fi et passerelle vivent sur le Core 0, cf. reseau.h. On n'attend
+  // rien ici : loop() commence a dessiner tout de suite, et l'ecran de
+  // liaison perdue prend le relais si rien ne repond.
+  demarreReseau();
 }
 
 // ------------------------------------------------------------------- loop
 void loop() {
   uint32_t now = millis();
 
-  if (now - g_lastPoll >= POLL_MS) {
-    g_lastPoll = now;
-    Flight fresh;
-    Prieres prieres;
-    Meteo meteo;
-    Heure heure;
-    Usage usage;
-    Audio son;
-    char screen[12] = "";
-    int16_t adkarRang = -1;
-    if (fetchGateway(fresh, prieres, meteo, heure, usage, son, screen,
-                     sizeof(screen), adkarRang)) {
-      g_lastGateway = now;
-      // L'adhan part ici, sur la cle envoyee par la passerelle : c'est elle
-      // qui decide quoi jouer et quand, cf. audio.py.
-      audioAppliquer(son);
-      g_meteo = meteo;
-      g_heure = heure;
-      g_usage = usage;
-      g_adkar = adkarRang;
-      // Priere qui prend la main pour la premiere fois : on l'annonce
-      if (prieres.ok && prieres.priseMain
-          && strcmp(prieres.nom, g_priereAnnoncee) != 0) {
-        g_alertePriere = now;
-        snprintf(g_priereAnnoncee, sizeof(g_priereAnnoncee), "%s", prieres.nom);
-      }
-      // La meteo s'annonce quand la rotation arrive sur elle, et non sur un
-      // changement de donnee : le temps qu'il fait n'arrive pas, il est la.
-      if (strcmp(screen, "meteo") == 0 && strcmp(g_screen, "meteo") != 0)
-        g_alerteMeteo = now;
-      g_prieres = prieres;
-      snprintf(g_screen, sizeof(g_screen), "%s", screen);
-      if (fresh.ok) {
-        g_flight = fresh;
-        g_lastOk = now;
-      }
-      // L'avion s'annonce au premier passage de "sc" a "vol" avec un nouvel
-      // indicatif, pas a son arrivee : pendant une priere, la passerelle le
-      // fait attendre, et l'annonce doit attendre avec lui.
-      if (annonceVolDue(g_screen, fresh.ok, g_flight.callsign, g_volAnnonce,
-                        sizeof(g_volAnnonce)))
-        g_alerte = now;
+  // Nouvelle reponse de la passerelle ? Recopiee sans jamais attendre : le
+  // reseau tourne sur l'autre coeur, cf. reseau.h.
+  if (recupereEtat(g_recu, g_numeroLu)) {
+    const EtatPasserelle &e = g_recu;
+    g_lastGateway = now;
+    // L'adhan part ici, sur la cle envoyee par la passerelle : c'est elle
+    // qui decide quoi jouer et quand, cf. audio.py.
+    audioAppliquer(e.son);
+    // Seulement au changement : setBrightness8() reecrit les deux tampons,
+    // y compris celui qui est a l'ecran.
+    if (e.br >= 0 && e.br != g_luminosite) {
+      g_luminosite = e.br;
+      dma->setBrightness8((uint8_t)e.br);
     }
+    g_meteo = e.meteo;
+    g_heure = e.heure;
+    g_usage = e.usage;
+    g_adkar = e.adkar;
+    // Priere qui prend la main pour la premiere fois : on l'annonce
+    if (e.prieres.ok && e.prieres.priseMain
+        && strcmp(e.prieres.nom, g_priereAnnoncee) != 0) {
+      g_alertePriere = now;
+      snprintf(g_priereAnnoncee, sizeof(g_priereAnnoncee), "%s",
+               e.prieres.nom);
+    }
+    // La meteo s'annonce quand la rotation arrive sur elle, et non sur un
+    // changement de donnee : le temps qu'il fait n'arrive pas, il est la.
+    if (strcmp(e.screen, "meteo") == 0 && strcmp(g_screen, "meteo") != 0)
+      g_alerteMeteo = now;
+    g_prieres = e.prieres;
+    snprintf(g_screen, sizeof(g_screen), "%s", e.screen);
+    if (e.flight.ok) {
+      g_flight = e.flight;
+      g_lastOk = now;
+    }
+    // L'avion s'annonce au premier passage de "sc" a "vol" avec un nouvel
+    // indicatif, pas a son arrivee : pendant une priere, la passerelle le
+    // fait attendre, et l'annonce doit attendre avec lui.
+    if (annonceVolDue(g_screen, e.flight.ok, g_flight.callsign, g_volAnnonce,
+                      sizeof(g_volAnnonce)))
+      g_alerte = now;
   }
 
   bool volFrais = g_flight.ok && now - g_lastOk < HOLD_MS;
@@ -388,6 +406,8 @@ void loop() {
     g_bascule = now;
   }
 
+  // Tout se dessine dans le tampon cache, qu'on efface d'abord : les
+  // moteurs de rendu n'effacent pas, cf. regle du jumeau.
   dma->clearScreen();
 
   uint32_t depuis = now - g_bascule;
@@ -402,5 +422,12 @@ void loop() {
     dessineEcran(g_ecran, now);
   }
 
-  delay(40);  // ~25 images par seconde, defilement fluide
+  // L'image terminee passe a l'ecran d'un coup
+  dma->flipDMABuffer();
+
+  // Cadence fixe : on retranche le temps passe a dessiner, sans jamais
+  // descendre sous une image DMA complete, cf. APRES_FLIP_MS
+  uint32_t duree = millis() - now;
+  uint32_t reste = duree < IMAGE_MS ? IMAGE_MS - duree : 0;
+  delay(reste > APRES_FLIP_MS ? reste : APRES_FLIP_MS);
 }
