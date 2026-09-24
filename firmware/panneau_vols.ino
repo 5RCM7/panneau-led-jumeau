@@ -11,9 +11,13 @@
 //     Adafruit_GFX.h introuvable)
 //   - ArduinoJson                               (Benoit Blanchon, v7)
 //
-// REGLAGE OBLIGATOIRE : Outils > Partition Scheme > "Huge APP (3MB No OTA)".
-// Avec le schema par defaut le croquis remplit 87 % des 1,3 Mo disponibles et
-// il ne reste pas la place des logos. En Huge APP : 36 % de 3,1 Mo.
+// REGLAGE OBLIGATOIRE : Outils > Partition Scheme >
+//   "Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)".
+// Deux emplacements de 1,9 Mo : celui qui tourne, et celui ou l'OTA ecrit la
+// version suivante. Le schema par defaut (1,3 Mo) serait trop juste avec les
+// logos, et "Huge APP" (3 Mo, un seul emplacement) interdit l'OTA.
+// Le premier televersement se fait au cable ; les suivants sans fil, cf.
+// reseau.h et OTA_PASSWORD dans secrets.h.
 //
 // Cablage HUB75 et branchements : voir README.md.
 // Alimentation 5 V dediee pour les panneaux, jamais via l'USB de l'ESP32.

@@ -1,0 +1,104 @@
+# Integration continue : tests hors ligne et compilation du firmware ESP32,
+# a chaque push et a chaque pull request.
+#
+# Versions epinglees : celles avec lesquelles le croquis a ete compile et
+# mesure. Les monter volontairement, jamais par defaut : une nouvelle
+# version de la bibliotheque HUB75 peut changer le comportement de
+# flipDMABuffer(), dont depend APRES_FLIP_MS.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ESP32_CORE: "3.3.12"
+  LIBS: >-
+    "ArduinoJson@7.4.2"
+    "ESP32 HUB75 LED MATRIX PANEL DMA Display@3.0.14"
+    "Adafruit GFX Library@1.12.6"
+    "Adafruit BusIO@1.17.4"
+
+jobs:
+  tests:
+    name: Tests hors ligne
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # g++ est present sur le runner : verif_annonce.py compile la regle C
+      # d'annonce d'avion et la compare a la passerelle, au lieu de s'ignorer.
+      - name: test_hors_ligne.py
+        run: python3 test_hors_ligne.py
+
+      # Les fichiers de code restent ASCII pur (cf. CLAUDE.md). Seul
+      # adkar_source.py porte l'arabe d'origine, dont les en-tetes sont
+      # generes.
+      - name: Fichiers de code en ASCII pur
+        run: |
+          fautifs=$(git ls-files '*.py' '*.ino' '*.h' \
+            | grep -v '^adkar_source\.py$' \
+            | xargs grep -lP '[^\x00-\x7F]' || true)
+          if [ -n "$fautifs" ]; then
+            echo "Caracteres non ASCII dans :"; echo "$fautifs"; exit 1
+          fi
+
+  firmware:
+    name: Firmware ${{ matrix.carte }} (${{ matrix.logos }} logos)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # sans logos.h : le chemin de repli, silhouette d'avion
+          - carte: esp32
+            logos: 0
+          # budget de logos plein (BUDGET_FLASH, 177 logos factices) : le
+          # pire cas doit tenir dans un emplacement OTA de 1,9 Mo
+          - carte: esp32
+            logos: 177
+          - carte: esp32s3
+            logos: 177
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      - name: Cache du core ESP32
+        uses: actions/cache@v4
+        with:
+          path: ~/.arduino15/packages
+          key: esp32-core-${{ env.ESP32_CORE }}
+
+      - name: Core ESP32 et bibliotheques
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls \
+            https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install "esp32:esp32@${ESP32_CORE}"
+          eval arduino-cli lib install $LIBS
+
+      # Schema Minimal SPIFFS : deux emplacements de 1,9 Mo pour l'OTA.
+      # Sans secrets.h, le croquis compile avec secrets.exemple.h.
+      - name: Compilation
+        env:
+          VERIF_FIRMWARE_OBLIGATOIRE: "1"
+          ARDUINO_FQBN: esp32:esp32:${{ matrix.carte }}:PartitionScheme=min_spiffs
+          LOGOS_FACTICES: ${{ matrix.logos }}
+        run: python3 verif_firmware.py

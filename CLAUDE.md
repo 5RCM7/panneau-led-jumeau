@@ -13,12 +13,14 @@ centrale du dépôt — voir « Règle du jumeau » plus bas.
 
 ## Commandes
 
-Le dépôt est dans `jumeau/`, ce fichier est un cran au-dessus.
+Tout est à la racine du dépôt.
 
 ```bash
 python3 server.py            # passerelle + simulateur, http://localhost:8080
-python3 test_hors_ligne.py   # 384 vérifications, aucun réseau requis
+python3 test_hors_ligne.py   # 388 vérifications, aucun réseau requis
 python3 verif_annonce.py     # annonce d'avion, Python contre C compilé (si g++)
+python3 verif_croquis.py     # règles du croquis (Core 0/1, double tampon, OTA)
+python3 verif_robustesse.py  # APIs malades simulées (délais, fils, caches)
 python3 apercu.py [secondes] # rend apercu.png sans lancer le serveur
 python3 apercu_html.py       # rend apercu.html, les vingt scènes
 python3 export_font.py       # régénère firmware/font5x7.h depuis font5x7.py
@@ -28,6 +30,19 @@ python3 export_adkar.py      # regenere les 99 noms d'Allah
 python3 maj_usage.py ...     # releve /usage -> usage.json
 python3 verif_firmware.py    # compile le croquis ESP32 (si arduino-cli)
 ```
+
+Les trois `verif_*` du milieu sont aussi appelés par `test_hors_ligne.py`.
+`verif_firmware.py` se règle par l'environnement : `ARDUINO_FQBN` (carte et
+partition), `LOGOS_FACTICES=N` (compile avec N logos factices, sans rien
+écrire dans `firmware/`), `ARDUINO_CTAGS` (ctags de remplacement quand
+arduino.cc est injoignable), `VERIF_FIRMWARE_OBLIGATOIRE=1` (échoue au lieu
+de s'ignorer sans arduino-cli).
+
+**Intégration continue** (`.github/workflows/main.yml`), à chaque push : le
+test hors ligne, la garde ASCII, puis la compilation du firmware pour
+l'ESP32 sans logos, l'ESP32 avec le budget de logos plein (177 factices) et
+l'ESP32-S3. Core ESP32 et bibliothèques y sont **épinglés** : les monter
+volontairement, en relisant `flipDMABuffer()` dans la bibliothèque HUB75.
 
 Pas de dépendances à installer : bibliothèque standard uniquement. Pillow est
 optionnel, et sert seulement à charger les logos PNG dans le simulateur.
@@ -46,8 +61,10 @@ d'un fichier du `firmware/`, puisqu'il compare les constantes des deux côtés.
 
 ## Architecture
 
-Neuf écrans : `vol`, `priere`, `horaires`, `meteo`, `heure`, les trois
-annonces et la veille. Les cinq premiers tournent, les autres s'intercalent.
+Huit écrans tournent : `vol`, `priere`, `horaires`, `annonces`, `meteo`,
+`adkar`, `claude` et `heure`, chacun sauté quand sa donnée manque. Trois
+annonces s'intercalent (`alerte` pour l'avion, `alerte_priere`,
+`alerte_meteo`), plus la veille et `liaison`, que seul le firmware impose.
 `heure` est toujours disponible : il ne dépend d'aucune source réseau.
 
 **L'heure figure sur chaque écran de la rotation et sur la veille**, jamais
@@ -56,20 +73,24 @@ de vols. Elle vient toujours de la passerelle, jamais de l'ESP32. En ajoutant
 un écran, lui réserver une place pour l'heure.
 
 ```
+                               un fil de collecte par source (collecteur.py),
+                               requêtes à 5 s max (telechargement.py)
 adsb.lol      (positions)  ─┐
-adsbdb.com    (routes)      ├─▶ flightsource.py ──┐
+adsbdb.com    (routes)      ├─▶ flightsource.py ──┐  fil « vols »
 adsbdb.com    (appareils)   │                     │
 hexdb.io      (repli)      ─┘                     │
                                                   │
-mawaqit.net   (confData)   ──▶ prieresource.py ───┤
+mawaqit.net   (confData)   ──▶ prieresource.py ───┤  fil « prieres »
                                  └─▶ horaires.py  ├─▶ passerelle.py
-                                                  │      (rotation,
-open-meteo.com (temps)     ──▶ meteosource.py ────┘       annonces)
-                                                            │
+                                                  │   état en mémoire,
+open-meteo.com (temps)     ──▶ meteosource.py ────┘   rotation, annonces
+                               fil « meteo »                │
                                                             ▼
-                                                         server.py
+                                             server.py (ne fait que lire)
                                                       ┌─────┴─────┐
                                                 simulateur      ESP32
+                                                     Core 0 : Wi-Fi, HTTP, OTA
+                                                     Core 1 : affichage
 ```
 
 | Fichier | Rôle |
@@ -141,9 +162,9 @@ open-meteo.com (temps)     ──▶ meteosource.py ────┘       annonc
 | `firmware/logos.h` | **généré**, non versionné (marques déposées) |
 | `test_hors_ligne.py` | tests avec réponses au format réel des APIs |
 
-Endpoints : `/` (simulateur), `/flight` (JSON compact ESP32, ~470 octets avec
-vol, prière, journée, météo et heure), `/flight/full`, `/prieres`, `/meteo`,
-`/frame`, `/snapshot.png`.
+Endpoints : `/` (simulateur), `/flight` (JSON compact ESP32, ~560 octets
+d'ordinaire, ~930 au pire), `/flight/full`, `/prieres`, `/meteo`, `/frame`
+(image, charge et santé des sources), `/snapshot.png`.
 
 **Chaque source a son fil de collecte** (`collecteur.py`), lancé par
 `Gateway.demarre()`. Règles à tenir :
@@ -230,8 +251,9 @@ deux avions qui se croisent se relaient à chaque sondage et relancent
 l'annonce à chaque fois.
 
 Le champ `sc` porte toujours l'**écran de fond**, jamais le nom d'une annonce :
-le firmware ne connaît que `vol`, `priere`, `horaires` et `meteo`, et
-retomberait en veille sur un nom qu'il ne sait pas lire. Voir `ECRAN_DE_FOND`
+le firmware ne connaît que les huit écrans de la rotation
+(`ecranDepuisNom()`), et retomberait en veille sur un nom qu'il ne sait pas
+lire. Voir `ECRAN_DE_FOND`
 dans `composition.py`, et le test qui le vérifie.
 
 ## Règle du jumeau
@@ -296,22 +318,39 @@ copie des constantes. Ne pas le remonter en tête de fichier.
 Si tu changes la mise en page d'un seul côté, le jumeau n'en est plus un et le
 projet perd son intérêt. Signale-le plutôt que de laisser diverger.
 
-`verif_jumeau.py` lit les en-têtes C et compare 29 constantes, les 5 couleurs,
-les deux silhouettes d'annonce, les sept icônes météo et les trois textes
-d'annonce à leurs jumelles Python. Une divergence fait échouer la suite en nommant la constante fautive.
+`verif_jumeau.py` lit les en-têtes C et compare 70 constantes, les 5 couleurs,
+l'étoile Claude, les deux silhouettes d'annonce, les sept icônes météo et
+onze textes à leurs jumelles Python. Une divergence fait échouer la suite en nommant la constante fautive.
 Ajoute les nouvelles constantes partagées à la table `JUMELLES` du test.
 
 ## Contraintes matérielles
 
-Chiffres **mesurés** à la compilation (60 logos, schéma Huge APP) : 36 % de la
-mémoire programme, 15 % de la SRAM, 276 Ko libres pour les variables locales.
-`python3 verif_firmware.py` les recalcule. Garder en tête :
+Chiffres **mesurés** à la compilation (core ESP32 3.3.12, HUB75 3.0.14,
+schéma Minimal SPIFFS), en pourcentage d'un emplacement d'application de
+1,9 Mo :
 
-- **Le schéma de partition Huge APP est obligatoire.** Par défaut l'ESP32
-  n'offre que 1,3 Mo à l'application, dont le croquis occupe déjà 87 % : il
-  resterait 167 Ko, moins que le budget de logos. Huge APP porte la partition
-  à 3,1 Mo. C'est un réglage de l'IDE, pas du code, donc rien ne le rappelle
-  au téléversement — d'où la mention en tête du croquis.
+| Cible | Logos | Programme | SRAM |
+| --- | --- | --- | --- |
+| ESP32 | aucun | 59 % | 19 % (264 Ko libres) |
+| ESP32 | 60 | 63 % | 19 % |
+| ESP32 | 177, budget plein | 70 % | 19 % |
+| ESP32-S3 | 177 | 68 % | 18 % |
+
+`python3 verif_firmware.py` les recalcule, et la CI compile le pire cas.
+Le double tampon DMA s'alloue au démarrage, hors de ces chiffres : quelques
+dizaines de Ko. Garder en tête :
+
+- **Le schéma de partition « Minimal SPIFFS (1.9MB APP with OTA/190KB
+  SPIFFS) » est obligatoire.** Il offre deux emplacements d'application :
+  celui qui tourne, et celui où l'OTA écrit la version suivante. « Huge APP »
+  (3 Mo, un seul emplacement) interdisait l'OTA ; le schéma par défaut
+  (1,3 Mo) serait à 90 % sans un seul logo. C'est un réglage de l'IDE, pas
+  du code : d'où la mention en tête du croquis, et le `FQBN` de
+  `verif_firmware.py`.
+- **OTA** : `ArduinoOTA` écoute dans la tâche réseau (Core 0), sous le nom
+  `panneau-vols`, et **seulement si `OTA_PASSWORD` est défini** dans
+  `secrets.h`. Le premier téléversement se fait au câble. Ne jamais
+  appeler `ArduinoOTA` depuis `loop()`.
 - **Adafruit GFX** est une dépendance de la bibliothèque HUB75 et doit être
   installée à part, sinon la compilation échoue.
 
@@ -327,11 +366,14 @@ mémoire programme, 15 % de la SRAM, 276 Ko libres pour les variables locales.
   disponibles, `"fajr"` retombe sur une heure fixe : un panneau tamisé toute
   la journée serait pire qu'une veille approximative.
 - La charge utile `/flight` doit rester sous `composition.BUDGET_OCTETS`,
-  **700 octets**. Le plafond était de 400 du temps où seuls les vols
-  circulaient ; avec les prières, la journée complète et la météo, le pire cas
-  monte à 521 et il a été relevé délibérément. ArduinoJson v7 alloue sur le
-  tas : 500 octets de JSON lui coûtent environ 1,5 Ko, sur ~200 Ko de SRAM
-  libre. La contrainte réelle n'est pas là. Un test mesure le pire cas.
+  **1 024 octets**. Le plafond était de 400 du temps où seuls les vols
+  circulaient ; chaque écran y a ajouté son bloc. Tous remplis jusqu'à leur
+  tampon C, le pire cas fait ~930 octets, une charge ordinaire ~560.
+  ArduinoJson v7 alloue sur le tas, environ trois fois la taille du JSON :
+  ~3 Ko sur ~260 Ko libres. La contrainte réelle n'est pas là. Le test 21
+  mesure le vrai pire cas : **y ajouter chaque nouveau bloc**, faute de quoi
+  il passe alors que la charge réelle déborde (c'est arrivé : il omettait
+  annonces, quota, audio et adkar).
 - Tout texte venu d'une API doit passer par `font5x7.affichable()` **avant**
   d'être envoyé à l'ESP32. La police est ASCII pure ; « São Paulo » ou
   « Nîmes » sortiraient en points d'interrogation, des deux côtés du jumeau.
@@ -348,10 +390,9 @@ mémoire programme, 15 % de la SRAM, 276 Ko libres pour les variables locales.
   croquis compile sans le fichier (`#if __has_include`) et retombe alors sur
   la silhouette — les deux chemins sont compilés.
 - Les ESP32-C3/C2/C6/H2 ne conviennent pas (pas de DMA parallèle). ESP32
-  classique ou S3 uniquement. **Vérifié à la compilation** : le classique
-  (36 %) et le S3 (35 %) passent, le C3 échoue à l'édition de liens. L'erreur
-  est laide (`collect2.exe: ld returned 1 exit status`) mais elle tombe au
-  build, donc on ne peut pas flasher une carte inadaptée par inadvertance.
+  classique ou S3 uniquement. **Vérifié à la compilation** : le classique et
+  le S3 passent, le C3 échoue au build (avec le core 3.3.12, sur `Serial2`
+  absent). On ne peut donc pas flasher une carte inadaptée par inadvertance.
 
 ## Style
 
@@ -366,17 +407,20 @@ mémoire programme, 15 % de la SRAM, 276 Ko libres pour les variables locales.
   final**. À 8 octets, `"horaires"` était tronqué en `"horaire"`, que
   `ecranDepuisNom()` ne reconnaît pas : le panneau retombait en veille à
   chaque tour du tableau. Il est à 12.
-- Pas de fichiers de plus de ~250 lignes : découper plutôt. **Cinq fichiers
-  dépassent nettement** et l'écart se creuse à chaque fonctionnalité :
-  `test_hors_ligne.py` (522), `server.py` (508), `firmware/panneau_vols.ino`
-  (455), `apercu_html.py` (306) et `panel.py` (259). Coupures naturelles :
-  sortir `Frame` de `panel.py` dans son propre module en le réexportant ;
-  sortir la table des scènes d'`apercu_html.py` ; séparer les jeux d'essai des
-  vérifications dans le test ; sortir la rotation et les annonces de
-  `server.py`. **C'est le prochain chantier à faire**, hors commit de
-  fonctionnalité.
+- Pas de fichiers de plus de ~250 lignes : découper plutôt. **Ceux qui
+  dépassent nettement**, et l'écart se creuse à chaque fonctionnalité :
+  `test_hors_ligne.py` (~1 430), `passerelle.py` (~675),
+  `firmware/panneau_vols.ino` (~440), `verif_robustesse.py` (~330) et
+  `flightsource.py` (~300). Coupures naturelles : séparer le test hors ligne
+  par thème, comme l'ont déjà été `verif_jumeau`, `verif_annonce`,
+  `verif_croquis` et `verif_robustesse` ; sortir de `passerelle.py` la
+  rotation et les annonces, puis la luminosité et la nuit ; sortir de
+  `panneau_vols.ino` le choix d'écran et ses garde-fous. `adkar_source.py`
+  est du contenu, pas du code. **C'est le prochain chantier à faire**, hors
+  commit de fonctionnalité.
 - Les fichiers `.py`, `.ino` et `.h` doivent rester **ASCII pur**, tiret
-  cadratin compris. Attention sous Windows : `Set-Content -Encoding utf8`
+  cadratin compris ; seul `adkar_source.py` porte l'arabe d'origine. La CI le
+  vérifie. Attention sous Windows : `Set-Content -Encoding utf8`
   ajoute un BOM en PowerShell 5.1, ce qui viole la règle sans prévenir.
 
 ## Données et vie privée
@@ -408,14 +452,15 @@ mémoire programme, 15 % de la SRAM, 276 Ko libres pour les variables locales.
 ## Travailler sans avion dans le ciel
 
 Mettre `"demo_mode": true` dans `config.json` : vols, prière, journée
-complète et météo fictifs, sans aucun appel réseau. Il doit alimenter les
-**six écrans** de la rotation (le septième, Claude Code, dépend d'un relevé
-`/usage` et disparaît sans lui) — un test le vérifie, parce que c'est
+complète et météo fictifs, sans aucun appel réseau. Il doit alimenter
+**six des huit écrans** de la rotation (`vol`, `priere`, `horaires`, `meteo`,
+`adkar`, `heure`) ; les annonces de la mosquée et Claude Code dépendent de
+données réelles et disparaissent sans elles — un test le vérifie, parce que c'est
 exactement ce qui s'était perdu en ajoutant la météo. Indispensable pour
 travailler la mise en page le soir ou hors couverture. **Toujours remettre
 `false`** avant de terminer.
 
-`python3 apercu_html.py` donne les dix-sept scènes dans le navigateur sans attendre
+`python3 apercu_html.py` donne les vingt scènes dans le navigateur sans attendre
 le bon moment de la journée. La page rejoue les pixels produits par `panel.py`
 et `ecran_prieres.py` : ne jamais y réécrire le rendu en JavaScript, ce serait
 un troisième jumeau à maintenir.
@@ -423,7 +468,6 @@ un troisième jumeau à maintenir.
 ## Pistes ouvertes
 
 - Chourouk : `horaires.day_times()` le calcule déjà, aucun écran ne l'affiche.
-- Mode veille nocturne, ou luminosité selon l'heure.
 - Passage à 128×64 (4 panneaux) : type d'appareil, immatriculation, altitude.
 - Récepteur local RTL-SDR + readsb, pour se passer des APIs.
 

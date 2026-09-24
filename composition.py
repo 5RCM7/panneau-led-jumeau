@@ -4,11 +4,13 @@ Separe de server.py : ce sont les deux endroits ou les ecrans se rejoignent,
 et ils ne dependent pas du serveur HTTP.
 
 Taille de la charge utile : le budget etait de 400 octets du temps ou seuls
-les vols circulaient. Avec les prieres, la journee complete et la meteo, le
-pire cas monte a ~465. Le plafond est releve a BUDGET_OCTETS plutot que de
-tordre le format : ArduinoJson v7 alloue sur le tas, une charge de 500 octets
-lui coute environ 1,5 Ko, sur les ~200 Ko de SRAM libre de l'ESP32. La
-contrainte reelle n'est pas la, et un test mesure le pire cas.
+les vols circulaient. Chaque ecran y a ajoute son bloc ; tous remplis
+jusqu'a leur tampon C (annonces, quota et audio compris), le pire cas monte
+a ~930 octets, et une charge ordinaire en fait ~560. Le plafond est releve a
+BUDGET_OCTETS plutot que de tordre le format : ArduinoJson v7 alloue sur le
+tas, environ trois fois la taille du JSON, soit ~3 Ko sur les ~260 Ko libres
+de l'ESP32. La contrainte reelle n'est pas la ; le test 21 mesure le vrai
+pire cas, et doit etre complete a chaque nouveau bloc.
 """
 
 import os
@@ -27,7 +29,7 @@ import transitions
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-BUDGET_OCTETS = 800
+BUDGET_OCTETS = 1024
 
 # Separateur des titres d'annonce dans la charge utile, cf. ecran_annonces.h
 SEP_ANNONCES = "|"

@@ -25,4 +25,11 @@ static const char *GATEWAY_IP = "192.168.1.20";
 // Port de server.py, http_port dans config.json.
 static const uint16_t GATEWAY_PORT = 8080;
 
+// Mot de passe des mises a jour sans fil (OTA). VIDE = OTA DESACTIVEE :
+// sans mot de passe, n'importe qui sur le reseau local pourrait flasher le
+// panneau. Choisir une vraie phrase de passe, propre a ce panneau.
+// Une macro, et non une constante : un secrets.h plus ancien, qui ne la
+// definit pas, compile encore (reseau.h la met alors a vide).
+#define OTA_PASSWORD ""
+
 #endif  // SECRETS_H

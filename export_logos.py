@@ -22,11 +22,12 @@ import panel
 TAILLE = panel.LOGO_PX
 SORTIE = os.path.join("firmware", "logos.h")
 
-# Garde-fou de bon sens, pas une limite materielle : avec le schema de
-# partition Huge APP le croquis n'occupe que 36 % de 3,1 Mo, il reste donc
-# environ 2 Mo. Mais le depot source des logos en compte pres d'un millier, et
-# tout prendre ferait plus d'un Mo de flash pour des compagnies qui ne
-# passeront jamais au-dessus de la maison.
+# Garde-fou de bon sens, et limite verifiee : avec le schema de partition
+# OTA (Minimal SPIFFS, 1,9 Mo par emplacement), le croquis plus ce budget
+# plein (177 logos) occupe 70 % d'un emplacement, compile en CI avec des
+# logos factices. Le depot source des logos en compte pres d'un millier :
+# tout prendre ne tiendrait pas, pour des compagnies qui ne passeront jamais
+# au-dessus de la maison.
 BUDGET_FLASH = 200 * 1024
 
 

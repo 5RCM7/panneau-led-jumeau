@@ -31,11 +31,21 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 CROQUIS = "panneau_vols"
 
-# Schema de partition "Huge APP" : avec celui par defaut, le croquis occupe
-# 87 % des 1,3 Mo disponibles et il ne reste que 167 Ko, moins que le budget
-# de logos. Huge APP porte la partition a 3,1 Mo, soit 36 % d'occupation.
-# Dans l'IDE Arduino : Outils > Partition Scheme > Huge APP (3MB No OTA).
-FQBN = "esp32:esp32:esp32:PartitionScheme=huge_app"
+# Schema de partition "Minimal SPIFFS" : deux emplacements d'application de
+# 1,9 Mo, pour les mises a jour sans fil (OTA). Dans l'IDE Arduino :
+# Outils > Partition Scheme > Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS).
+# ARDUINO_FQBN le remplace, par exemple pour compiler pour l'ESP32-S3.
+FQBN = os.environ.get("ARDUINO_FQBN",
+                      "esp32:esp32:esp32:PartitionScheme=min_spiffs")
+
+# Avec LOGOS_FACTICES=N, la copie compilee recoit un logos.h de N logos
+# factices (des aplats, aucune marque) : c'est le chemin AVEC_LOGOS qui est
+# compile, et la taille mesuree est celle du panneau reel. Rien n'est ecrit
+# dans firmware/.
+LOGOS_FACTICES = int(os.environ.get("LOGOS_FACTICES", "0") or 0)
+
+# En CI, l'absence d'arduino-cli doit echouer, pas etre ignoree.
+OBLIGATOIRE = os.environ.get("VERIF_FIRMWARE_OBLIGATOIRE") == "1"
 
 
 def trouve_cli():
@@ -46,12 +56,22 @@ def trouve_cli():
     return shutil.which("arduino-cli")
 
 
+def ecrit_logos_factices(chemin, combien):
+    """logos.h de combien logos unis, au format exact d'export_logos."""
+    import export_logos
+    cote = export_logos.TAILLE
+    logos = [("F%02X" % n, [(n * 2654435761) & 0xFFFF] * (cote * cote))
+             for n in range(combien)]
+    with open(chemin, "w", encoding="ascii") as handle:
+        handle.write(export_logos._entete(logos))
+
+
 def main():
     cli = trouve_cli()
     if not cli:
         print("arduino-cli introuvable : verification ignoree.")
         print("Voir l'en-tete de ce fichier pour l'installer.")
-        return 0
+        return 1 if OBLIGATOIRE else 0
 
     source = os.path.join(HERE, "firmware")
     with tempfile.TemporaryDirectory() as tmp:
@@ -61,6 +81,9 @@ def main():
             if nom.endswith((".ino", ".h")):
                 shutil.copy2(os.path.join(source, nom),
                              os.path.join(cible, nom))
+        if LOGOS_FACTICES:
+            ecrit_logos_factices(os.path.join(cible, "logos.h"),
+                                 LOGOS_FACTICES)
         copies = sorted(os.listdir(cible))
         print("croquis : %d fichiers (%s)" % (len(copies), ", ".join(copies)))
 

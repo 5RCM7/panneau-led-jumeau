@@ -91,6 +91,25 @@ def verifie(check):
           marge and int(marge.group(1)) * 60 >= 1000,
           "%s ms" % (marge.group(1) if marge else "?"))
 
+    # OTA : sur le Core 0, jamais sans mot de passe, partition a deux slots
+    check("croquis : l'OTA n'est servie que par la tache reseau",
+          "ArduinoOTA" not in ino and "ArduinoOTA.handle()" in reseau)
+    ota = corps(reseau, "static bool demarreOta(")
+    check("croquis : pas d'OTA sans mot de passe",
+          re.search(r"if\s*\(\s*!OTA_PASSWORD\[0\]\s*\)\s*return false",
+                    ota) and "setPassword(OTA_PASSWORD)" in ota)
+    check("croquis : le modele de secrets laisse l'OTA coupee",
+          re.search(r'#define\s+OTA_PASSWORD\s+""', lis("secrets.exemple.h")))
+    with open(os.path.join(HERE, "verif_firmware.py"), encoding="ascii") as f:
+        verif = f.read()
+    with open(os.path.join(HERE, ".github", "workflows", "main.yml"),
+              encoding="utf-8") as f:
+        ci = f.read()
+    check("croquis : compile avec la partition OTA, localement et en CI",
+          "PartitionScheme=min_spiffs" in verif
+          and "PartitionScheme=min_spiffs" in ci
+          and "huge_app" not in verif + ci)
+
     # Les secrets restent hors du depot
     with open(os.path.join(HERE, ".gitignore"), encoding="utf-8") as handle:
         ignores = handle.read().split()

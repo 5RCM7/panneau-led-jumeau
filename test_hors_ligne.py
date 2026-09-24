@@ -325,9 +325,21 @@ def main():
                      restant="23H59", jour=[{"nom": "X", "adhan": "23:59"}] * 5)
     pire_meteo = {"temperature": -12, "ressenti": -18, "vent_kmh": 120,
                   "icone": "eclaircie", "texte": "BROUILLARD", "lieu": "V" * 11}
-    pire_heure = {"heure": "23:59", "date": "MERCREDI 28 SEPT"}
-    charge_max = json.dumps(server.compact_flight(pire, pire_info, "horaires",
-                                                  pire_meteo, pire_heure))
+    pire_heure = {"heure": "23:59", "date": "D" * 19, "luminosite": 255}
+    # Tous les blocs, chacun rempli jusqu'a son tampon C : l'ancien pire cas
+    # omettait annonces, quota, audio et adkar, et passait sous le budget
+    # alors que la vraie charge pleine le depassait.
+    pire["aircraft"] = "B" * 31           # char avion[32]
+    pire_info["mosquee"] = "M" * 11       # char mosquee[12]
+    pire_info["annonces"] = ["X" * 48, "Y" * 48, "Z" * 52]  # annonces[152]
+    pire_meteo.update(texte="T" * 15, pluie_min=120, pluie_heure="23:59",
+                      heure="23:59")
+    pire_usage = {"cle_a": "5H", "restant_a": 100, "reset_a": "23H59",
+                  "cle_b": "7J", "restant_b": 100, "reset_b": "23H59"}
+    pire_son = {"son": 2, "cue": "C" * 23, "volume": 30}  # char cue[24]
+    charge_max = json.dumps(server.compact_flight(
+        pire, pire_info, "horaires", pire_meteo, pire_heure, 98, pire_usage,
+        pire_son))
     check("charge utile au pire cas sous la limite",
           len(charge_max) < composition.BUDGET_OCTETS,
           "%d octets sur %d" % (len(charge_max), composition.BUDGET_OCTETS))

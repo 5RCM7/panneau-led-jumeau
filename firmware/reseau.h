@@ -6,7 +6,7 @@
 // donc ici, dans une tache FreeRTOS epinglee sur le Core 0 (celui de la pile
 // Wi-Fi), pendant que loop() dessine sur le Core 1 sans jamais attendre.
 //
-//   Core 0 : tacheReseau  -> Wi-Fi, mDNS, fetchGateway() -> g_partage
+//   Core 0 : tacheReseau  -> Wi-Fi, mDNS, OTA, fetchGateway() -> g_partage
 //   Core 1 : loop()       -> recupereEtat() -> dessin -> flipDMABuffer()
 //
 // Le seul point de contact est g_partage, garde par un mutex. La tache
@@ -14,12 +14,26 @@
 // d'une recopie. Le Core 1 le tente sans attendre (delai nul) : s'il est
 // pris, il redessine l'etat precedent et reessaie a l'image suivante.
 //
+// Mises a jour sans fil (OTA) : ArduinoOTA ecoute ici aussi, sur le Core 0.
+// Le croquis est pousse depuis l'IDE (port reseau "panneau-vols") ou par
+// espota.py, avec le mot de passe OTA_PASSWORD de secrets.h ; vide, l'OTA
+// reste coupee. Il faut le schema de partition "Minimal SPIFFS (1.9MB APP
+// with OTA)" : deux emplacements d'application, l'un tourne pendant qu'on
+// ecrit l'autre. Pendant l'envoi, l'affichage continue ; il peut hoqueter,
+// la flash etant brievement indisponible pendant ses effacements.
+//
 // Inclus depuis panneau_vols.ino APRES passerelle.h.
 
 #ifndef RESEAU_H
 #define RESEAU_H
 
+#include <ArduinoOTA.h>
 #include <ESPmDNS.h>
+
+// secrets.h d'avant l'OTA : pas de mot de passe, donc pas d'OTA
+#ifndef OTA_PASSWORD
+#define OTA_PASSWORD ""
+#endif
 
 // Nom sous lequel le panneau s'annonce lui-meme : panneau-vols.local
 static const char *MDNS_NOM = "panneau-vols";
@@ -29,6 +43,10 @@ static const uint32_t WIFI_RELANCE_MS = 10000;
 // changer d'adresse, par exemple au renouvellement du bail DHCP.
 static const uint8_t ECHECS_AVANT_RESOLUTION = 3;
 static const uint32_t PILE_RESEAU = 16384;  // HTTPClient + ArduinoJson
+// Entre deux interrogations de la passerelle, on ecoute l'OTA a ce rythme :
+// l'invitation d'espota.py n'attend qu'une seconde avant de reessayer.
+static const uint32_t OTA_ECOUTE_MS = 100;
+static const uint16_t OTA_PORT = 3232;
 
 static EtatPasserelle g_partage;      // ecrit par le Core 0, sous g_verrou
 static uint32_t g_partageNumero = 0;  // incremente a chaque reponse
@@ -45,11 +63,45 @@ static void resoutPasserelle(bool mdnsPret) {
   Serial.printf("passerelle : %s\n", g_url);
 }
 
+// Active l'OTA une fois le Wi-Fi et le mDNS en place. Jamais sans mot de
+// passe : ce serait ouvrir le flashage a tout le reseau local.
+static bool demarreOta(bool mdnsPret) {
+  if (!OTA_PASSWORD[0]) return false;
+  ArduinoOTA.setHostname(MDNS_NOM);
+  ArduinoOTA.setPort(OTA_PORT);
+  ArduinoOTA.setPassword(OTA_PASSWORD);
+  // Le mDNS est deja lance par nous : ArduinoOTA ne doit pas le relancer,
+  // on se contente d'y annoncer le service, pour que l'IDE voie le panneau.
+  ArduinoOTA.setMdnsEnabled(false);
+  ArduinoOTA.onStart([]() { Serial.println("OTA : debut"); });
+  ArduinoOTA.onEnd([]() { Serial.println("OTA : fin, redemarrage"); });
+  ArduinoOTA.onError([](ota_error_t e) { Serial.printf("OTA : erreur %u\n", e); });
+  ArduinoOTA.begin();
+  if (mdnsPret) MDNS.enableArduino(OTA_PORT, true);
+  Serial.println("OTA : a l'ecoute");
+  return true;
+}
+
+// Attend jusqu'a l'echeance en ecoutant l'OTA. Pendant un envoi,
+// ArduinoOTA.handle() ne rend la main qu'a la fin : c'est voulu, il n'y a
+// alors rien d'autre a faire ici, et l'affichage vit sur l'autre coeur.
+static void patiente(uint32_t ms, bool otaPret) {
+  uint32_t debut = millis();
+  do {
+    if (otaPret) ArduinoOTA.handle();
+    uint32_t ecoule = millis() - debut;
+    if (ecoule >= ms) break;
+    uint32_t pas = ms - ecoule;
+    vTaskDelay(pdMS_TO_TICKS(pas < OTA_ECOUTE_MS ? pas : OTA_ECOUTE_MS));
+  } while (true);
+}
+
 static void tacheReseau(void *) {
   // Statique : hors de la pile de la tache, qui n'en a pas besoin de deux.
   static EtatPasserelle recu;
   uint32_t dernierEssaiWifi = millis();
   bool mdnsPret = false;
+  bool otaPret = false;
   uint8_t echecs = 0;
   for (;;) {
     uint32_t debut = millis();
@@ -60,6 +112,7 @@ static void tacheReseau(void *) {
       }
     } else {
       if (!mdnsPret) mdnsPret = MDNS.begin(MDNS_NOM);
+      if (!otaPret) otaPret = demarreOta(mdnsPret);
       if (!g_url[0] || echecs >= ECHECS_AVANT_RESOLUTION) {
         resoutPasserelle(mdnsPret);
         echecs = 0;
@@ -76,7 +129,7 @@ static void tacheReseau(void *) {
       }
     }
     uint32_t ecoule = millis() - debut;
-    vTaskDelay(pdMS_TO_TICKS(ecoule < POLL_MS ? POLL_MS - ecoule : 50));
+    patiente(ecoule < POLL_MS ? POLL_MS - ecoule : 50, otaPret);
   }
 }
 

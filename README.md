@@ -1,22 +1,33 @@
 # Jumeau numérique — panneau LED « gare » des vols au-dessus de la maison
 
 Un panneau LED 128×32 façon affichage de gare, qui montre en direct le vol qui
-passe au-dessus de chez vous : indicatif, compagnie, origine → destination.
+passe au-dessus de chez vous (indicatif, compagnie, origine → destination),
+et autour de lui une horloge murale : la prochaine prière de la mosquée, les
+cinq horaires du jour, les annonces de la mosquée, la météo, le nom d'Allah
+du jour, le quota Claude Code et l'heure. Huit écrans en rotation, chacun
+avec sa durée, et trois annonces animées : un avion qui arrive, une prière
+qui prend la main, la météo.
 
 Le projet est un **jumeau numérique** : le simulateur PC et le vrai panneau
 consomment le même JSON et partagent la même police et la même mise en page.
 On met tout au point à l'écran, puis on branche le matériel.
 
 ```
-     APIs publiques                passerelle              affichage
-  ┌──────────────────┐       ┌──────────────────┐     ┌──────────────────┐
-  │ adsb.lol   (pos) │──────▶│                  │────▶│ simulateur web   │
-  │ adsbdb.com (route)│      │  server.py       │     │ (panel.py)       │
-  │ hexdb.io   (repli)│      │  /flight  /frame │     ├──────────────────┤
-  └──────────────────┘       └──────────────────┘────▶│ ESP32 + HUB75    │
-                                                       │ (panneau_vols)   │
-                                                       └──────────────────┘
+     APIs publiques               passerelle PC                affichage
+  ┌───────────────────┐    ┌────────────────────────┐    ┌───────────────────┐
+  │ adsb.lol, adsbdb, │───▶│ fil « vols »           │    │ simulateur web    │
+  │ hexdb.io          │    │                        │───▶│ (même moteur)     │
+  │ mawaqit.net       │───▶│ fil « prieres »  état  │    ├───────────────────┤
+  │ open-meteo.com    │───▶│ fil « meteo »  mémoire │───▶│ ESP32 + HUB75     │
+  └───────────────────┘    │ server.py : /flight    │    │ Core 0 : réseau   │
+     5 s max par requête   └────────────────────────┘    │ Core 1 : affichage│
+                                                         └───────────────────┘
 ```
+
+Chaque source est collectée dans son propre fil ; les requêtes HTTP du
+panneau et du simulateur ne font que lire l'état en mémoire. Côté ESP32, le
+réseau vit sur un cœur et l'affichage sur l'autre : rien ne peut figer
+l'écran. Détails dans « Quand une API tombe » et « Firmware ».
 
 ## Démarrage rapide
 
@@ -46,16 +57,31 @@ Avant le premier lancement, mettez vos coordonnées dans `config.json` :
 | `duree_ecrans` | durée par écran, en secondes |
 | `meteo_lieu` | nom du lieu affiché sur l'écran météo |
 | `luminosite_jour`, `luminosite_nuit` | intensité du panneau, 0-255 |
-| `nuit_debut`, `nuit_fin` | plage de veille nocturne, en heures |
+| `nuit_debut`, `nuit_fin` | plage de veille nocturne : heure pleine, `"HH:MM"` ou `"fajr"` |
 
 `config.json` n'est pas versionné, puisqu'il contient la position du domicile.
 Partez de `config.exemple.json`, qui porte les mêmes clés avec des coordonnées
 neutres.
 
 Passez `demo_mode` à `true` pour travailler la mise en page sans dépendre du
-trafic réel — pratique le soir ou si aucun avion ne passe. Il alimente les
-**six écrans** de la rotation, sans aucun appel réseau. Le septième,
-Claude Code, dépend d'un relevé `/usage` et disparaît sans lui.
+trafic réel — pratique le soir ou si aucun avion ne passe. Il alimente six
+des huit écrans de la rotation (vol, prière, horaires, météo, adkar, heure),
+sans aucun appel réseau. Les annonces de la mosquée et Claude Code dépendent
+de données réelles et disparaissent sans elles.
+
+Les vérifications, toutes sans réseau :
+
+```bash
+python3 test_hors_ligne.py   # 388 vérifications, dont les trois suivantes
+python3 verif_annonce.py     # annonce d'avion : Python contre C compilé
+python3 verif_croquis.py     # règles du croquis : cœurs, double tampon, OTA
+python3 verif_robustesse.py  # APIs malades simulées : délais, fils, caches
+python3 verif_firmware.py    # compile le croquis ESP32 (si arduino-cli)
+```
+
+La CI (`.github/workflows/main.yml`) les lance à chaque push, puis compile le
+firmware pour l'ESP32 (sans logos et avec le budget de logos plein) et pour
+l'ESP32-S3.
 
 ## Fichiers
 
@@ -96,6 +122,14 @@ Claude Code, dépend d'un relevé `/usage` et disparaît sans lui.
 | `export_adkar.py` | génère les 99 noms d'Allah |
 | `adkar.py` | silhouettes des 99 noms (généré) |
 | `verif_firmware.py` | compile le croquis ESP32 sans le téléverser |
+| `verif_jumeau.py` | compare les constantes Python et C |
+| `verif_annonce.py` | rejoue l'annonce d'avion des deux côtés |
+| `verif_croquis.py` | règles du croquis : cœurs, double tampon, OTA, secrets |
+| `verif_robustesse.py` | APIs malades simulées : délais, fils, caches |
+| `collecteur.py` | un fil de collecte par source |
+| `telechargement.py` | HTTP à échéance stricte (5 s) et taille plafonnée |
+| `stockage.py` | écriture atomique des caches JSON |
+| `.github/workflows/main.yml` | intégration continue |
 | `firmware/panneau_vols.ino` | croquis Arduino pour l'ESP32 |
 | `firmware/ecran_prieres.h` | écran des prières côté firmware |
 | `firmware/ecran_horaires.h` | tableau des horaires côté firmware |
@@ -113,6 +147,9 @@ Claude Code, dépend d'un relevé `/usage` et disparaît sans lui.
 | `firmware/adkar.h` | silhouettes des 99 noms (généré) |
 | `firmware/ecran_vol.h` | écran des vols côté firmware |
 | `firmware/passerelle.h` | client HTTP côté firmware |
+| `firmware/reseau.h` | tâche réseau sur le Core 0 : Wi-Fi, mDNS, OTA |
+| `firmware/annonce_vol.h` | règle d'annonce d'avion, sans dépendance Arduino |
+| `firmware/secrets.exemple.h` | modèle de `secrets.h` (non versionné) |
 | `firmware/font5x7.h` | police exportée en C (généré, ne pas éditer) |
 | `firmware/logos.h` | logos en RGB565 (généré, non versionné) |
 
@@ -121,11 +158,11 @@ Claude Code, dépend d'un relevé `/usage` et disparaît sans lui.
 | URL | Contenu |
 | --- | --- |
 | `/` | simulateur : rendu LED animé + état de la passerelle |
-| `/flight` | JSON compact consommé par l'ESP32 : vol, prière et écran à afficher |
+| `/flight` | JSON compact consommé par l'ESP32 : l'écran à afficher et les données de chaque écran |
 | `/flight/full` | JSON complet du vol, pour mise au point |
 | `/prieres` | JSON complet de la prière courante, pour mise au point |
 | `/meteo` | JSON complet de la météo courante, pour mise au point |
-| `/frame` | tampon de pixels courant en base64, utilisé par le simulateur |
+| `/frame` | tampon de pixels courant en base64, charge `/flight` et santé des sources, pour le simulateur |
 | `/snapshot.png` | capture PNG du panneau à l'instant t |
 
 Le bandeau défilant enchaîne **compagnie → ville d'arrivée → appareil →
@@ -141,15 +178,25 @@ connaît pas les accents et rendrait « São Paulo » en « S?O PAULO ». Le
 nettoyage a lieu dans `build_flight()`, donc l'ESP32 reçoit déjà des champs
 propres — il n'a pas de quoi le faire lui-même.
 
-Exemple de charge utile `/flight` :
+Exemple de charge utile `/flight`, abrégé (en mode démo, la charge complète
+fait ~560 octets ; au pire, chaque champ rempli, ~930, sous le budget de
+1 024 que vérifie le test) :
 
 ```json
 {"ok":true,"cs":"AFR1234","al":"Air France","ic":"AFR",
  "fr":"CDG","to":"JFK","ct":"New York","lv":"FL340","km":4.2,
  "sc":"vol",
- "pr":{"n":"MAGHREB","a":"19:59","i":"20:04","r":"52 MIN",
-       "m":"MOSQUEE","h":"19:07","u":false,"e":false,"d":false}}
+ "pr":{"n":"MAGHREB","a":"19:59","i":"20:09","r":"12 MIN","m":"MOSQUEE",
+       "h":"12:29","u":false,"e":false,"d":false,
+       "pt":"05:54,13:45,17:09,19:59,21:22","rg":3,"an":"","jm":false},
+ "mt":{"t":18,"r":16,"v":12,"i":3,"x":"COUVERT","l":"PARIS", ...},
+ "hr":{"h":"12:29","d":"JEUDI 24 SEPT"},"br":40,"ad":42,
+ "au":{"s":0,"c":"","v":22}}
 ```
+
+Blocs : `pr` prière et journée, `mt` météo, `hr` heure et date, `br`
+luminosité, `ad` rang du nom d'Allah du jour, `au` son à jouer, `cl` quota
+Claude Code (s'il y a un relevé).
 
 `sc` porte l'écran à afficher. La rotation et les priorités sont décidées
 dans la passerelle, une seule fois : le firmware obéit, ce qui évite que les
@@ -582,7 +629,7 @@ fait une fois, puis superpose.
 La courbe est un `t²(3−2t)`, identique des deux côtés : en linéaire, l'à-coup
 de début et de fin se voit nettement sur 32 pixels de haut.
 
-Pour voir les quatorze scènes sans attendre le bon moment de la journée :
+Pour voir les vingt scènes sans attendre le bon moment de la journée :
 
 ```bash
 python3 apercu_html.py
@@ -674,38 +721,83 @@ Masse commune entre l'ESP32 et l'alimentation des panneaux.
      elle-même Adafruit BusIO. Sans elle, la compilation échoue sur
      `Adafruit_GFX.h: No such file or directory`.
    - **ArduinoJson** (v7)
-2. Régler **Outils > Partition Scheme > Huge APP (3MB No OTA)**. Avec le
-   schéma par défaut le croquis remplit 87 % des 1,3 Mo et il ne reste pas la
-   place des logos ; en Huge APP il occupe 36 % de 3,1 Mo.
+
+   Versions validées, celles de la CI : core ESP32 3.3.12, HUB75 3.0.14,
+   ArduinoJson 7.4.2, Adafruit GFX 1.12.6.
+2. Régler **Outils > Partition Scheme > Minimal SPIFFS (1.9MB APP with
+   OTA/190KB SPIFFS)** : deux emplacements d'application, pour les mises à
+   jour sans fil. « Huge APP » n'en a qu'un et interdit l'OTA ; le schéma par
+   défaut serait à 90 % sans un seul logo.
 3. Copier `firmware/secrets.exemple.h` en `firmware/secrets.h` et y renseigner
    `WIFI_SSID`, `WIFI_PASS`, `GATEWAY_HOST` (le nom mDNS du PC qui fait
    tourner `server.py`, sans `.local`), `GATEWAY_IP` (l'adresse de repli) et
-   `GATEWAY_PORT`. `secrets.h` est ignoré par git : le mot de passe Wi-Fi ne
-   quitte pas la machine. Sans lui, le croquis compile avec le modèle et le
-   signale par un avertissement.
-4. Téléverser.
+   `GATEWAY_PORT`, et `OTA_PASSWORD` pour les mises à jour sans fil.
+   `secrets.h` est ignoré par git : les mots de passe ne quittent pas la
+   machine. Sans lui, le croquis compile avec le modèle et le signale par un
+   avertissement.
+4. Téléverser au câble, la première fois.
+
+### Mises à jour sans fil (OTA)
+
+Une fois `OTA_PASSWORD` défini et le premier téléversement fait au câble, le
+panneau apparaît dans l'IDE Arduino sous **Outils > Port > panneau-vols**
+(port réseau) : on téléverse ensuite sans le décrocher du mur. Sans mot de
+passe, l'OTA reste coupée : n'importe qui sur le réseau local pourrait sinon
+flasher le panneau.
+
+L'OTA écoute dans la tâche réseau, sur le Core 0. Pendant l'envoi,
+l'affichage continue ; il peut hoqueter, la flash étant brièvement
+indisponible pendant ses effacements, puis le panneau redémarre sur la
+nouvelle version. Un envoi interrompu ne casse rien : l'ancienne version
+reste dans son emplacement et continue de tourner.
 
 Le panneau cherche la passerelle par mDNS (`GATEWAY_HOST.local`), puis retombe
 sur `GATEWAY_IP`. Il redemande l'adresse après trois échecs d'affilée, ce qui
 suit le PC s'il change d'adresse. Lui-même s'annonce en `panneau-vols.local`.
 Windows 10+, macOS et Linux avec Avahi publient leur nom d'hôte d'eux-mêmes.
 
-**L'affichage ne fige jamais.** Le Wi-Fi et les requêtes HTTP tournent dans
-une tâche FreeRTOS sur le Core 0 (`firmware/reseau.h`) ; `loop()` dessine sur
-le Core 1 à 25 images par seconde, en double tampon, et ne fait que recopier
-le dernier état reçu, sans jamais attendre le réseau. Passerelle plantée ou
-Wi-Fi coupé, les défilements continuent et l'écran de liaison perdue prend le
-relais.
+### Deux cœurs : l'affichage ne fige jamais
 
-Occupation mesurée avec 60 logos : **36 %** de la mémoire programme et **15 %**
-de la SRAM, soit 276 Ko libres pour les variables locales. L'ESP32-S3 compile
-aussi (35 %) ; l'ESP32-C3 échoue à l'édition de liens, faute de DMA parallèle
-— l'erreur tombe au build, pas au téléversement.
+```
+Core 0  tacheReseau   Wi-Fi ─ mDNS ─ OTA ─ fetchGateway() ─┐
+                                                          │ g_partage (mutex)
+Core 1  loop()        recupereEtat() ◀────────────────────┘ délai nul
+                      effacer ─ dessiner ─ flipDMABuffer()  25 images/s
+```
+
+- **Core 0** : le Wi-Fi (reconnexion toutes les 10 s), le mDNS, l'OTA et les
+  requêtes à la passerelle vivent dans une tâche FreeRTOS
+  (`firmware/reseau.h`). Chaque réponse est recopiée dans un état partagé,
+  sous mutex, le temps d'une copie. Cette tâche ne touche jamais au panneau,
+  pas même à sa luminosité.
+- **Core 1** : `loop()` tente le mutex **sans attendre** ; s'il est pris, il
+  redessine l'état précédent et réessaie à l'image suivante. Il dessine dans
+  un tampon caché, puis `flipDMABuffer()` l'affiche d'un coup : ni
+  scintillement ni image déchirée. La bibliothèque n'attendant pas la fin de
+  l'image en cours, 17 ms (une image à 60 Hz) séparent l'échange de la
+  prochaine écriture.
+
+Passerelle plantée ou Wi-Fi coupé, les défilements continuent, et l'écran
+« LIAISON PERDUE » prend le relais au bout de 90 s.
+
+Occupation mesurée (core 3.3.12, en pourcentage d'un emplacement de 1,9 Mo) :
+
+| Cible | Logos | Programme | SRAM |
+| --- | --- | --- | --- |
+| ESP32 | aucun | 59 % | 19 % (264 Ko libres) |
+| ESP32 | 60 | 63 % | 19 % |
+| ESP32 | 177, budget plein | 70 % | 19 % |
+| ESP32-S3 | 177 | 68 % | 18 % |
+
+L'ESP32-C3 échoue à la compilation, faute de DMA parallèle : l'erreur tombe
+au build, pas au téléversement.
 
 Avant de téléverser, `python3 verif_firmware.py` compile le croquis et signale
 les erreurs. Il demande [arduino-cli](https://arduino.github.io/arduino-cli/),
 s'ignore s'il ne le trouve pas, et compile une copie temporaire : Arduino veut
 un dossier portant le nom du croquis, or le nôtre s'appelle `firmware/`.
+`LOGOS_FACTICES=177` y ajoute des logos factices (des aplats, aucune marque)
+pour mesurer le pire cas, et `ARDUINO_FQBN` change de carte.
 
 Si l'image apparaît décalée d'une colonne, basculez `cfg.clkphase` à `true`.
 
@@ -742,7 +834,7 @@ python3 export_logos.py
 
 Cela écrit `firmware/logos.h`, qu'il suffit de retéléverser avec le croquis.
 Les tableaux y sont `const`, donc rangés **en flash et non en SRAM** : compter
-1152 octets de flash par logo, et rien sur les ~200 Ko de SRAM libre.
+1152 octets de flash par logo, et rien sur les ~260 Ko de SRAM libre.
 
 Le croquis compile sans ce fichier (`#if __has_include`) et affiche alors la
 silhouette pour tout le monde. Un logo absent du fichier retombe aussi sur la
@@ -777,7 +869,7 @@ siennes.
   donnent vos propres données ADS-B, sans quota ni latence réseau.
 - **Wokwi** : le simulateur en ligne gère HUB75 et le Wi-Fi, ce qui permet de
   valider le croquis complet avant d'avoir le matériel.
-- **Mode veille** : couper l'affichage la nuit, ou réduire `BRIGHTNESS` selon
-  l'heure.
+- **Chourouk** : `horaires.day_times()` le calcule déjà, aucun écran ne
+  l'affiche.
 - **Deuxième rangée** : passer à 128×64 (4 panneaux) pour afficher le type
   d'appareil, l'immatriculation et l'altitude sur des lignes dédiées.
